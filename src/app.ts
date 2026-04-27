@@ -87,7 +87,7 @@ app.innerHTML = `
       </div>
     </aside>
     <main class="main">
-      <video id="video" class="video-player" controls autoplay muted></video>
+      <video id="video" class="video-player" controls autoplay></video>
       <div id="radio-card" class="radio-card" aria-hidden="true">
         <div class="radio-icon">&#9654;</div>
         <div id="radio-name" class="radio-name"></div>
