@@ -10,7 +10,6 @@ Streams live TV in the browser with no plugins required. SD channels are transco
 - Channel list with HD/SD/Radio filtering
 - Channel visibility management (hide channels you don't want)
 - DVB subtitle burn-in for supported channels
-- TV guide via HDHomeRun's built-in EPG
 
 ## Requirements
 
