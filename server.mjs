@@ -22,6 +22,10 @@ const transcodeAudioBitrate = process.env.TRANSCODE_AUDIO_BITRATE ?? '96k';
 const ffprobeTimeoutMs = Number(process.env.FFPROBE_TIMEOUT_MS ?? 10000);
 const ffmpegStartTimeoutMs = Number(process.env.FFMPEG_START_TIMEOUT_MS ?? 12000);
 const ffmpegIdleTimeoutMs = Number(process.env.FFMPEG_IDLE_TIMEOUT_MS ?? 25000);
+const maxConcurrentStreamsRaw = Number(process.env.MAX_CONCURRENT_STREAMS ?? 1);
+const maxConcurrentStreams = Number.isFinite(maxConcurrentStreamsRaw) && maxConcurrentStreamsRaw >= 1
+  ? Math.floor(maxConcurrentStreamsRaw)
+  : 1;
 // How long to wait after killing the previous ffmpeg before starting the next
 // one, to give the HDHomeRun time to release the tuner slot.
 const tunerReleaseDelayMs = Number(process.env.TUNER_RELEASE_DELAY_MS ?? 300);
@@ -41,11 +45,11 @@ const epgRefreshIntervalHours = Number(process.env.EPG_REFRESH_INTERVAL_HOURS ??
 const epgRetryIntervalSeconds = Number(process.env.EPG_RETRY_INTERVAL_SECONDS ?? 60);
 const epgCachePath = join(epgCacheDir, 'guide.json');
 
-// Single active playback session for this server process. Any new channel
-// request (HD stream, radio stream, or transcode) cancels the previous one
-// first so we don't leave stale tuner allocations behind.
-let currentFfmpeg = null;
-let currentPassthroughAbort = null;
+// Active playback sessions managed by a bounded pool. With a limit of 1 we
+// preserve the original behavior (new stream request replaces previous one).
+const activePlaybackSessions = new Map();
+let playbackSessionId = 0;
+let playbackGate = Promise.resolve();
 
 // EPG data cache
 let epgData = null;
@@ -67,6 +71,84 @@ let epgSidecarLastContainerName = null;
 
 const lineupCacheTtlMs = Number(process.env.LINEUP_CACHE_TTL_MS ?? 60000);
 const normalizedHdhrHost = new URL(`http://${hdhomerunHost}`).hostname;
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const withPlaybackGate = async (task) => {
+  const previousGate = playbackGate;
+  let releaseGate;
+  playbackGate = new Promise((resolve) => {
+    releaseGate = resolve;
+  });
+
+  await previousGate;
+  try {
+    return await task();
+  } finally {
+    releaseGate();
+  }
+};
+
+const releaseAllActivePlaybackLocked = async () => {
+  if (activePlaybackSessions.size === 0) return false;
+
+  const sessions = [...activePlaybackSessions.values()];
+  activePlaybackSessions.clear();
+
+  for (const session of sessions) {
+    try {
+      session.stop(true);
+    } catch {
+      // ignore cleanup errors during forced takeover
+    }
+  }
+
+  await wait(tunerReleaseDelayMs);
+  return true;
+};
+
+const acquirePlaybackSession = async (type, stop) => {
+  return await withPlaybackGate(async () => {
+    if (maxConcurrentStreams === 1) {
+      await releaseAllActivePlaybackLocked();
+    } else if (activePlaybackSessions.size >= maxConcurrentStreams) {
+      return {
+        ok: false,
+        statusCode: 503,
+        message: `All stream slots are in use (${activePlaybackSessions.size}/${maxConcurrentStreams})`,
+        active: activePlaybackSessions.size,
+        limit: maxConcurrentStreams,
+      };
+    }
+
+    playbackSessionId += 1;
+    const id = `session-${playbackSessionId}`;
+
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      void withPlaybackGate(async () => {
+        activePlaybackSessions.delete(id);
+      });
+    };
+
+    activePlaybackSessions.set(id, {
+      id,
+      type,
+      stop,
+      startedAt: Date.now(),
+    });
+
+    return {
+      ok: true,
+      id,
+      release,
+      active: activePlaybackSessions.size,
+      limit: maxConcurrentStreams,
+    };
+  });
+};
 
 const parseProbeFps = (value) => {
   const raw = String(value ?? '').trim();
@@ -449,26 +531,6 @@ const restartEpgSidecar = async () => {
   }
 };
 
-const releaseActivePlayback = async () => {
-  let released = false;
-
-  if (currentFfmpeg && !currentFfmpeg.killed) {
-    currentFfmpeg.kill('SIGKILL');
-    currentFfmpeg = null;
-    released = true;
-  }
-
-  if (currentPassthroughAbort) {
-    currentPassthroughAbort.abort();
-    currentPassthroughAbort = null;
-    released = true;
-  }
-
-  if (released) {
-    await new Promise((r) => setTimeout(r, tunerReleaseDelayMs));
-  }
-};
-
 const mimeByExt = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
@@ -540,14 +602,16 @@ const passthroughStream = async (req, res, prefix) => {
   const upstreamPath = reqUrl.pathname.slice(prefix.length) || '/';
   const sourceUrl = new URL(upstreamPath + reqUrl.search, `${streamBase}/`).toString();
 
-  await releaseActivePlayback();
-
   const controller = new AbortController();
-  currentPassthroughAbort = controller;
+  const slot = await acquirePlaybackSession('passthrough', () => controller.abort());
+  if (!slot.ok) {
+    respond(res, slot.statusCode, slot.message);
+    return;
+  }
 
   const cleanup = () => {
     controller.abort();
-    if (currentPassthroughAbort === controller) currentPassthroughAbort = null;
+    slot.release();
   };
   req.on('close', cleanup);
 
@@ -556,6 +620,7 @@ const passthroughStream = async (req, res, prefix) => {
     upstreamRes = await fetch(sourceUrl, { signal: controller.signal });
   } catch {
     req.off('close', cleanup);
+    slot.release();
     if (controller.signal.aborted) { res.end(); return; }
     respond(res, 503, 'Stream unavailable');
     return;
@@ -571,6 +636,7 @@ const passthroughStream = async (req, res, prefix) => {
 
   if ((req.method ?? 'GET') === 'HEAD' || !upstreamRes.body) {
     req.off('close', cleanup);
+    slot.release();
     res.end();
     return;
   }
@@ -583,6 +649,7 @@ const passthroughStream = async (req, res, prefix) => {
     // aborted — normal on channel switch
   } finally {
     req.off('close', cleanup);
+    slot.release();
   }
   res.end();
 };
@@ -622,9 +689,28 @@ const transcodeStream = async (req, res) => {
     return;
   }
 
-  await releaseActivePlayback();
+  let ffmpeg = null;
 
-  const ffmpeg = spawn('ffmpeg', [
+  const stopFfmpeg = (force = false) => {
+    if (ffmpeg && !ffmpeg.killed) {
+      if (force) {
+        ffmpeg.kill('SIGKILL');
+      } else {
+        ffmpeg.kill('SIGTERM');
+        setTimeout(() => {
+          if (ffmpeg && !ffmpeg.killed) ffmpeg.kill('SIGKILL');
+        }, 500);
+      }
+    }
+  };
+
+  const slot = await acquirePlaybackSession('transcode', (force) => stopFfmpeg(Boolean(force)));
+  if (!slot.ok) {
+    respond(res, slot.statusCode, slot.message);
+    return;
+  }
+
+  ffmpeg = spawn('ffmpeg', [
     '-hide_banner',
     '-loglevel', 'error',
     // Discard incoming DTS; genpts reconstructs PTS from frame rate.
@@ -665,8 +751,6 @@ const transcodeStream = async (req, res) => {
     'pipe:1',
   ]);
 
-  currentFfmpeg = ffmpeg;
-
   let started = false;
   let startTimer;
   let idleTimer;
@@ -682,20 +766,6 @@ const transcodeStream = async (req, res) => {
       console.error('[ffmpeg] idle timeout, force-killing process');
       stopFfmpeg(true);
     }, ffmpegIdleTimeoutMs);
-  };
-
-  const stopFfmpeg = (force = false) => {
-    if (!ffmpeg.killed) {
-      if (force) {
-        ffmpeg.kill('SIGKILL');
-      } else {
-        ffmpeg.kill('SIGTERM');
-        setTimeout(() => {
-          if (!ffmpeg.killed) ffmpeg.kill('SIGKILL');
-        }, 500);
-      }
-    }
-    if (currentFfmpeg === ffmpeg) currentFfmpeg = null;
   };
 
   startTimer = setTimeout(() => {
@@ -732,7 +802,7 @@ const transcodeStream = async (req, res) => {
 
   ffmpeg.on('error', () => {
     clearWatchdogs();
-    if (currentFfmpeg === ffmpeg) currentFfmpeg = null;
+    slot.release();
     if (!res.headersSent) {
       respond(res, 503, 'Transcoder failed to start');
       return;
@@ -742,7 +812,7 @@ const transcodeStream = async (req, res) => {
 
   ffmpeg.on('exit', (code) => {
     clearWatchdogs();
-    if (currentFfmpeg === ffmpeg) currentFfmpeg = null;
+    slot.release();
     if (res.writableEnded) return;
 
     if (!started) {
@@ -1388,6 +1458,6 @@ createServer(async (req, res) => {
     }
   }
 }).listen(port, '0.0.0.0', async () => {
-  console.log(`tv-player server listening on :${port}`);
+  console.log(`tv-player server listening on :${port} (max concurrent streams: ${maxConcurrentStreams})`);
   await initializeEPG();
 });

@@ -10,6 +10,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - HDHOMERUN_HOST=192.168.0.49   # <-- change to your HDHomeRun's IP address
+      - MAX_CONCURRENT_STREAMS=4      # set to your tuner count (e.g. Quatro=4)
 #      - TRANSCODE_PRESET=ultrafast
       - TRANSCODE_PRESET=medium
       - TRANSCODE_SCALE=960:-2

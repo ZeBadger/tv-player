@@ -44,6 +44,7 @@ All settings are in `compose.yaml`:
 | Variable | Default | Description |
 |---|---|---|
 | `HDHOMERUN_HOST` | _(required)_ | IP address of your HDHomeRun device |
+| `MAX_CONCURRENT_STREAMS` | `1` | Maximum simultaneous playback sessions served by this app. Set to your tuner capacity (for example `4` on FLEX QUATRO) |
 | `TRANSCODE_PRESET` | `medium` | ffmpeg x264 preset (`ultrafast` → `veryslow`). Faster = lower CPU, lower quality |
 | `TRANSCODE_SCALE` | `960:-2` | Output resolution for SD transcode. `-2` preserves aspect ratio |
 | `TRANSCODE_FPS` | `25` | Output frame rate |
