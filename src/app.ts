@@ -128,6 +128,7 @@ app.innerHTML = `
         <button id="visibility-btn" class="hidden-settings-btn" type="button">Channel visibility</button>
         <button id="epg-settings-btn" class="hidden-settings-btn" type="button">EPG settings</button>
       </div>
+      <div class="app-credit">Created by <a href="https://github.com/ZeBadger" target="_blank" rel="noopener noreferrer">ZeBadger</a></div>
     </aside>
     <main class="main">
       <video id="video" class="video-player" controls autoplay></video>

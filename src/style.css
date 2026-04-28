@@ -162,6 +162,22 @@ html, body {
   text-overflow: ellipsis;
 }
 
+.app-credit {
+  padding: 0 12px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.app-credit a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+.app-credit a:hover {
+  color: var(--text);
+}
+
 .visibility-modal {
   position: fixed;
   inset: 0;

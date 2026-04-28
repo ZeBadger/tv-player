@@ -4,6 +4,8 @@ A self-hosted web-based TV player for [HDHomeRun](https://www.silicondust.com/) 
 
 Streams live TV in the browser with no plugins required. SD channels are transcoded to H.264 for browser compatibility; HD channels are passed through directly.
 
+Created by [ZeBadger](https://github.com/ZeBadger).
+
 **Features**
 
 - Live TV and radio playback in the browser
