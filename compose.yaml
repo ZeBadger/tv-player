@@ -1,10 +1,15 @@
 services:
   tv-player:
     build: .
+    depends_on:
+      - iptv-epg
     ports:
       - "8080:80"
+    volumes:
+      - ./epg:/app/epg
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      - HDHOMERUN_HOST=192.168.0.X   # <-- change to your HDHomeRun's IP address
+      - HDHOMERUN_HOST=192.168.0.49   # <-- change to your HDHomeRun's IP address
 #      - TRANSCODE_PRESET=ultrafast
       - TRANSCODE_PRESET=medium
       - TRANSCODE_SCALE=960:-2
@@ -13,4 +18,18 @@ services:
       - TRANSCODE_VIDEO_MAXRATE=2200k
       - TRANSCODE_VIDEO_BUFSIZE=4400k
       - TRANSCODE_AUDIO_BITRATE=96k
+      # EPG configuration (defaults to local iptv-org sidecar)
+      - EPG_SOURCE_URL=http://iptv-epg:3000/guide.xml
+      - EPG_CACHE_DIR=/tmp/epg
+      - EPG_REFRESH_INTERVAL_HOURS=12
+      - EPG_SIDECAR_SERVICE_NAME=iptv-epg
+    restart: unless-stopped
+
+  iptv-epg:
+    image: ghcr.io/iptv-org/epg:master
+    volumes:
+      - ./epg:/epg/public
+    environment:
+      - CRON_SCHEDULE=0 */12 * * *
+      - RUN_AT_STARTUP=true
     restart: unless-stopped

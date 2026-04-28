@@ -1,10 +1,26 @@
 import type { Channel } from './hdhomerun';
 import { isRadio } from './hdhomerun';
 
+export interface EpgProgramme {
+  start: string;
+  stop: string;
+  channel: string;
+  title: string;
+  desc: string;
+}
+
+export interface NowNextData {
+  [channelId: string]: {
+    now?: EpgProgramme;
+    next?: EpgProgramme;
+  };
+}
+
 export function renderChannelList(
   container: HTMLElement,
   channels: Channel[],
   onSelect: (channel: Channel) => void,
+  nowNextData?: NowNextData,
 ): void {
   container.innerHTML = '';
 
@@ -32,23 +48,67 @@ export function renderChannelList(
     name.className = 'channel-name';
     name.textContent = channel.GuideName; // textContent, never innerHTML
 
+    const info = document.createElement('div');
+    info.className = 'channel-info';
+    info.appendChild(number);
+    info.appendChild(name);
+
     if (channel.HD) {
       const badge = document.createElement('span');
       badge.className = 'channel-hd';
       badge.textContent = 'HD';
-      item.appendChild(number);
-      item.appendChild(name);
-      item.appendChild(badge);
+      info.appendChild(badge);
     } else if (isRadio(channel)) {
       const badge = document.createElement('span');
       badge.className = 'channel-radio';
       badge.textContent = 'RADIO';
-      item.appendChild(number);
-      item.appendChild(name);
-      item.appendChild(badge);
-    } else {
-      item.appendChild(number);
-      item.appendChild(name);
+      info.appendChild(badge);
+    }
+
+    item.appendChild(info);
+
+    // Add now/next guide snippet if available
+    if (nowNextData && nowNextData[channel.URL]) {
+      const guideData = nowNextData[channel.URL];
+      if (guideData.now || guideData.next) {
+        const guide = document.createElement('div');
+        guide.className = 'channel-guide';
+        if (guideData.now) {
+          const nowDiv = document.createElement('div');
+          nowDiv.className = 'guide-now';
+
+          const nowLabel = document.createElement('span');
+          nowLabel.className = 'guide-label';
+          nowLabel.textContent = 'Now';
+
+          const nowText = document.createElement('span');
+          nowText.className = 'guide-text';
+          nowText.textContent = guideData.now.title;
+          nowText.setAttribute('data-fulltext', [guideData.now.title, guideData.now.desc].filter(Boolean).join('\n'));
+
+          nowDiv.appendChild(nowLabel);
+          nowDiv.appendChild(nowText);
+          guide.appendChild(nowDiv);
+        }
+        if (guideData.next) {
+          const nextDiv = document.createElement('div');
+          nextDiv.className = 'guide-next';
+
+          const nextLabel = document.createElement('span');
+          nextLabel.className = 'guide-label';
+          nextLabel.textContent = 'Next';
+
+          const nextText = document.createElement('span');
+          nextText.className = 'guide-text';
+          nextText.textContent = guideData.next.title;
+          nextText.setAttribute('data-fulltext', [guideData.next.title, guideData.next.desc].filter(Boolean).join('\n'));
+
+          nextDiv.appendChild(nextLabel);
+          nextDiv.appendChild(nextText);
+          guide.appendChild(nextDiv);
+        }
+        item.appendChild(guide);
+      }
     }
 
     item.addEventListener('click', () => {
