@@ -54,30 +54,9 @@ All settings are in `compose.yaml`:
 
 ## EPG (Electronic Program Guide)
 
-TV Player can display a free EPG (now/next programme information) if you provide an XMLTV feed.
+TV Player can display a free EPG (now/next programme information). By default, this project includes an `iptv-org/epg` Docker sidecar that generates `guide.xml` locally from `epg/channels.xml`.
 
-By default, this project now includes an `iptv-org/epg` sidecar in `compose.yaml` that generates `guide.xml` locally from `epg/channels.xml`.
-
-### Setup
-
-**Option 1: Configure via EPG Settings Modal**
-- Click the "EPG settings" button in the sidebar
-- Paste an XMLTV feed URL into the source field, or use the built-in iptv-org channel-list picker
-- Click "Save" for manual URLs, or "Use Selected List" for an iptv-org `*.channels.xml` file
-- If you use the Docker sidecar picker flow, click "Rebuild Guide Now" when needed and let TV Player load the new guide automatically
-- Click "Reload Current Guide" to import the latest built guide into TV Player
-
-**Option 2: Set Environment Variable**
-Set `EPG_SOURCE_URL` in `compose.yaml` to point to a free XMLTV guide provider:
-
-```yaml
-services:
-  tv-player:
-    environment:
-      - EPG_SOURCE_URL=https://example.com/guide.xml
-```
-
-### Included Docker Sidecar (Recommended)
+### Quick Start: Built-in EPG Server (Recommended)
 
 `compose.yaml` includes a separate `iptv-epg` service:
 
@@ -91,13 +70,7 @@ Start both services:
 docker compose up --build -d
 ```
 
-If you want to expose the guide outside Docker for debugging, add a port mapping to `iptv-epg` (for example `3000:3000`) and then open `http://localhost:3000/guide.xml`.
-
-### Multi-Country Setup (Important)
-
-The repository ships with a starter `epg/channels.xml` file. This is only a default example and may not match your country/provider.
-
-To set your country/provider list:
+**Configure your country/provider:**
 
 1. Open TV Player and click **EPG settings**
 2. Use the **iptv-org Channel Lists** filter and selectors to choose a site/provider XML list
@@ -106,7 +79,34 @@ To set your country/provider list:
 5. Wait for the **Guide build** status to show that the guide file is up to date
 6. TV Player will load the rebuilt guide automatically, or you can click **Reload Current Guide**
 
-Manual alternative:
+**Debugging:**
+
+If you want to expose the guide outside Docker for debugging, add a port mapping to `iptv-epg` (for example `3000:3000`) and then open `http://localhost:3000/guide.xml`.
+
+### External EPG Server (Optional)
+
+To use a manual XMLTV feed URL instead of the built-in sidecar:
+
+1. Open TV Player and click **EPG settings**
+2. Select **Use an external EPG server**
+3. Paste an XMLTV feed URL into the source field
+4. Click **Save**
+5. Click **Reload Guide** to import the data
+
+Or set `EPG_SOURCE_URL` in `compose.yaml`:
+
+```yaml
+services:
+  tv-player:
+    environment:
+      - EPG_SOURCE_URL=https://example.com/guide.xml
+```
+
+### Manual Channel List Setup
+
+The repository ships with a starter `epg/channels.xml` file. This is only a default example and may not match your country/provider.
+
+**To manually replace the channel list:**
 
 1. Open the iptv-org channels folder: `https://github.com/iptv-org/epg/tree/master/sites`
 2. Find your provider/country file named `*.channels.xml`
@@ -114,28 +114,25 @@ Manual alternative:
 4. Replace local `epg/channels.xml` with that file
 5. Open **EPG settings** and click **Rebuild Guide Now**
 
-```bash
-docker compose restart iptv-epg
-```
-
 Then open TV Player and click **EPG settings** -> **Reload Current Guide** if it has not auto-loaded yet.
 
-Notes:
+### Setup Notes
 
 - Sidecar first build can take several minutes.
-- Changing the selected `*.channels.xml` file updates `epg/channels.xml`, then TV Player can request a sidecar rebuild directly from the settings modal.
 - Guide content refreshes automatically, but channel definitions come from `epg/channels.xml`.
 - If channels are added/removed by your provider, repeat the replacement steps above.
 - Docker control from the settings modal uses the mounted Docker socket in the default compose setup.
+- EPG data is cached locally so it persists across restarts.
+- If fetch fails, the last cached data is used.
 
 ### Recommended EPG Sources
 
-- **iptv-org EPG** (multi-country support)
+- **iptv-org EPG** (built-in, multi-country support, recommended)
   - UK Freeview channels map: `https://raw.githubusercontent.com/iptv-org/epg/master/sites/freeview.co.uk/freeview.co.uk.channels.xml`
   - See [iptv-org](https://github.com/iptv-org/epg) for other countries
   - Note: current iptv-org workflow is to generate `guide.xml` locally (or in Docker) from a channels list
 
-- **XMLTV UK Freeview** (manual setup)
+- **XMLTV UK Freeview** (external, manual setup)
   - Visit [xmltv.org](https://wiki.xmltv.org/index.php/Main_Page)
   - Requires local grabber configuration
 
