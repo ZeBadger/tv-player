@@ -6,6 +6,11 @@ Priority labels:
 - P1: High-value user improvements
 - P2: Nice-to-have and long-term items
 
+## Recently Completed
+
+- [x] Add configurable concurrent stream limit for multiple simultaneous viewers (set by `MAX_CONCURRENT_STREAMS`).
+- [x] Document concurrent stream limit in compose and README examples.
+
 ## Sprint 1 (P0)
 
 - [ ] Add unit tests for stream selection rules in src/hdhomerun.ts.
@@ -34,6 +39,7 @@ Definition of done:
 
 ## Sprint 3 (P1/P2)
 
+- [x] Add configurable concurrent stream capacity to support multi-user viewing based on tuner count.
 - [ ] Add selectable transcode profiles (quality, balanced, low bandwidth).
 - [ ] Add adaptive retry policy based on known error categories.
 - [ ] Add a lightweight diagnostics page that surfaces server stream metrics.
@@ -77,8 +83,8 @@ Milestone C: Frontend guide UI (Estimate: 2 to 4 days) **DONE**
 
 Milestone D: Refresh and resilience (Estimate: 1 to 2 days)
 
-- [ ] Add scheduled EPG refresh job in backend startup flow.
-- [ ] Keep serving last-known-good guide on fetch/parsing failures.
+- [x] Add scheduled EPG refresh job in backend startup flow.
+- [x] Keep serving last-known-good guide on fetch/parsing failures.
 - [ ] Add lightweight metrics logs for guide fetch duration, mapping success, and freshness age.
 - [ ] Add manual refresh endpoint guarded for local network use.
 
@@ -98,7 +104,7 @@ Definition of done:
 
 ## Backlog (P2)
 
-- [ ] EPG now/next display.
+- [x] EPG now/next display.
 - [ ] Channel logo support.
 - [ ] DVR scheduling exploration spike.
 - [ ] Remote-access hardening documentation.

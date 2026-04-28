@@ -9,6 +9,12 @@ This roadmap focuses on reliability first, then user experience, then advanced c
 3. Add visibility into stream and transcode health.
 4. Grow toward recorder and richer metadata features without destabilizing core playback.
 
+## Recent Progress
+
+1. Added configurable concurrent stream capacity for multi-user viewing (`MAX_CONCURRENT_STREAMS`) so the server can match tuner count (for example 4 on Quatro).
+2. Completed core EPG guide UX (now/next in list plus guide panel) and landed sidecar-first setup flow in docs.
+3. Completed EPG scheduled refresh and last-known-good cache fallback behavior in backend.
+
 ## Phase 1: Reliability And Safety (Now)
 
 1. Add automated tests for stream URL selection and player lifecycle.
@@ -59,7 +65,7 @@ EPG implementation milestones (free-first strategy):
 1. Milestone A: XMLTV ingestion baseline (1 to 2 days).
 2. Milestone B: Channel mapping and now/next API (2 to 3 days).
 3. Milestone C: Frontend TV guide panel and per-channel schedule (2 to 4 days).
-4. Milestone D: Scheduled refresh, caching, and stale-data handling (1 to 2 days).
+4. Milestone D: Scheduled refresh, caching, and stale-data handling (1 to 2 days). Status: mostly complete.
 5. Milestone E: Optional over-the-air EIT fallback spike (2 to 4 days, research-heavy).
 
 Milestone details:
@@ -75,6 +81,7 @@ Milestone details:
    Primary file changes: src/app.ts, src/channelList.ts, src/style.css.
 4. Milestone D (refresh and resilience).
    Deliverables: Add background refresh schedule, stale cache policy, and user-visible guide freshness state.
+   Progress: background refresh and stale cache fallback are in place; remaining work is stronger guide telemetry/logging and endpoint hardening.
    Primary file changes: server.mjs, compose.yaml, src/app.ts.
 5. Milestone E (EIT fallback spike).
    Deliverables: Prototype free over-the-air fallback path and compare quality/maintenance cost.
