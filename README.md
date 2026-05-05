@@ -10,6 +10,7 @@ Created by [ZeBadger](https://github.com/ZeBadger).
 
 - Live TV and radio playback in the browser
 - Channel list with HD/SD/Radio filtering
+- EPG now/next programme snippets in the channel list
 - Channel visibility management (hide channels you don't want)
 - DVB subtitle burn-in for supported channels
 
@@ -47,6 +48,9 @@ All settings are in `compose.yaml`:
 |---|---|---|
 | `HDHOMERUN_HOST` | _(required)_ | IP address of your HDHomeRun device |
 | `MAX_CONCURRENT_STREAMS` | `1` | Maximum simultaneous playback sessions served by this app. Set to your tuner capacity (for example `4` on FLEX QUATRO) |
+| `AUTH_INITIAL_ADMIN_USERNAME` | `admin` | Username for the first admin account (only used when no auth data exists yet) |
+| `AUTH_INITIAL_ADMIN_TOKEN` | auto-generated if unset | Optional one-time bootstrap token for first admin sign-in |
+| `AUTH_REMEMBER_TTL_SECONDS` | `2592000` | Remember-this-device session lifetime in seconds (default 30 days) |
 | `TRANSCODE_PRESET` | `medium` | ffmpeg x264 preset (`ultrafast` → `veryslow`). Faster = lower CPU, lower quality |
 | `TRANSCODE_SCALE` | `960:-2` | Output resolution for SD transcode. `-2` preserves aspect ratio |
 | `TRANSCODE_FPS` | `25` | Output frame rate |
@@ -54,6 +58,52 @@ All settings are in `compose.yaml`:
 | `TRANSCODE_VIDEO_MAXRATE` | `2200k` | Maximum video bitrate |
 | `TRANSCODE_VIDEO_BUFSIZE` | `4400k` | Video rate control buffer size |
 | `TRANSCODE_AUDIO_BITRATE` | `96k` | AAC audio bitrate |
+
+## Token Access (No Password Prompts)
+
+TV Player supports token sign-in with persistent device sessions:
+
+1. On first startup, the server creates an admin user and prints an initial admin token in logs (or uses `AUTH_INITIAL_ADMIN_TOKEN` if set).
+2. Open TV Player with `/?token=YOUR_TOKEN` or paste the token into the sign-in prompt.
+3. The token is exchanged, then removed from the URL and saved as a secure session cookie.
+
+Tokens are reusable and stay valid until an admin revokes them. You can still create expiring tokens explicitly if you want to.
+
+Auth data is stored in `data/auth.json` (and persisted in Compose via `./data:/app/data`).
+
+### Admin Recovery Script
+
+If you get locked out of admin, run:
+
+```powershell
+pwsh ./scripts/recover-admin-token.ps1
+```
+
+Then restart the app service and sign in with the printed URL.
+
+If you deliberately wipe `data/auth.json`, restarting the app will bootstrap a fresh admin user and print a new initial admin token in the server logs.
+
+Useful options:
+
+- `-Username admin` target a specific admin user
+- `-ExpiresInDays 7` set an optional token lifetime; omit it for a reusable token with no expiry
+- `-BaseUrl https://tv.example.com` print a public invite URL
+- `-AuthFile data/auth.json` override auth file path
+
+### Admin API (for user/token management)
+
+After signing in as admin, you can use the in-app `Admin` panel or call these same-origin endpoints directly:
+
+- `GET /auth/admin/users`
+- `GET /auth/admin/tokens?userId=...`
+- `POST /auth/admin/users` with `{"username":"alice","role":"user"}`
+- `POST /auth/admin/users/disable` with `{"userId":"..."}`
+- `POST /auth/admin/users/restore` with `{"userId":"..."}`
+- `POST /auth/admin/users/delete` with `{"userId":"..."}` (requires user to be disabled first)
+- `POST /auth/admin/tokens` with `{"userId":"...","label":"Alice phone"}` or include `expiresInHours` for an optional expiry
+- `POST /auth/admin/tokens/revoke` with `{"tokenId":"..."}`
+
+`POST /auth/admin/tokens` returns both the token and a ready-to-share `inviteUrl`.
 
 ## EPG (Electronic Program Guide)
 

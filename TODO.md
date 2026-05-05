@@ -17,6 +17,8 @@ Priority labels:
 - [ ] Add unit tests for player setup and teardown behavior in src/player.ts.
 - [ ] Add integration test for channel switching cleanup behavior in server.mjs.
 - [ ] Add server request correlation id and structured log fields.
+- [ ] Ensure Docker-visible logs include timestamps where possible.
+- [ ] Fix issue where the "Next" TV show is not displayed when the current "Now" show is the last programme before midnight.
 - [ ] Add /health endpoint that validates HDHomeRun reachability.
 - [ ] Improve frontend playback error messages with actionable recovery hints.
 
@@ -32,6 +34,7 @@ Definition of done:
 - [ ] Add last-channel resume on app load.
 - [ ] Persist subtitle preference by channel id.
 - [ ] Add playback status indicator for passthrough vs transcode mode.
+- [ ] Add an admin-only usage log showing activity by different users.
 
 Definition of done:
 
@@ -94,6 +97,12 @@ Milestone E: Validation and tests (Estimate: 1 to 2 days)
 - [ ] Add mapping tests for common UK Freeview channel name variants.
 - [ ] Add API tests for /epg/now-next and /epg/status.
 - [ ] Add frontend smoke test for now/next rendering fallback behavior.
+
+Milestone F: Full-day guide and recording UX (Estimate: 3 to 5 days)
+
+- [ ] Implement full EPG view for the remaining day with a sliding window, including skip controls and search.
+- [ ] Add reminder and record actions in the EPG UI.
+- [ ] Implement recording option with settings for recording format.
 
 Definition of done:
 

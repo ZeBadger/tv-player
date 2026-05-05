@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { createReadStream, existsSync, statSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { dirname, extname, join, normalize } from 'node:path';
@@ -44,6 +45,18 @@ const epgCacheDir = process.env.EPG_CACHE_DIR ?? '/tmp/epg';
 const epgRefreshIntervalHours = Number(process.env.EPG_REFRESH_INTERVAL_HOURS ?? 12);
 const epgRetryIntervalSeconds = Number(process.env.EPG_RETRY_INTERVAL_SECONDS ?? 60);
 const epgCachePath = join(epgCacheDir, 'guide.json');
+
+const authDataDir = join(__dirname, 'data');
+const authDataPath = join(authDataDir, 'auth.json');
+const authSessionCookieName = 'tvp_session';
+const authInitialAdminUsername = process.env.AUTH_INITIAL_ADMIN_USERNAME ?? 'admin';
+const authInitialAdminToken = process.env.AUTH_INITIAL_ADMIN_TOKEN?.trim() ?? '';
+const authSessionTtlSeconds = Math.max(300, Number(process.env.AUTH_SESSION_TTL_SECONDS ?? 8 * 3600));
+const authRememberTtlSeconds = Math.max(3600, Number(process.env.AUTH_REMEMBER_TTL_SECONDS ?? 30 * 24 * 3600));
+const authDefaultTokenTtlHoursRaw = Number(process.env.AUTH_TOKEN_TTL_HOURS ?? 0);
+const authDefaultTokenTtlHours = Number.isFinite(authDefaultTokenTtlHoursRaw) && authDefaultTokenTtlHoursRaw > 0
+  ? Math.max(1, authDefaultTokenTtlHoursRaw)
+  : null;
 
 // Active playback sessions managed by a bounded pool. With a limit of 1 we
 // preserve the original behavior (new stream request replaces previous one).
@@ -909,6 +922,235 @@ const readJsonBody = async (req) => {
   });
 };
 
+const createId = (prefix) => `${prefix}_${randomBytes(12).toString('hex')}`;
+const createOpaqueToken = () => randomBytes(24).toString('base64url');
+const hashToken = (token) => createHash('sha256').update(token).digest('hex');
+const nowIso = () => new Date().toISOString();
+
+const sanitizeUsername = (value) => String(value ?? '').trim().replace(/\s+/g, ' ');
+
+const defaultAuthStore = () => ({
+  version: 1,
+  users: [],
+  tokens: [],
+  sessions: [],
+});
+
+const loadAuthStore = () => {
+  if (!existsSync(authDataPath)) return defaultAuthStore();
+  try {
+    const parsed = JSON.parse(readFileSync(authDataPath, 'utf-8'));
+    if (!parsed || typeof parsed !== 'object') return defaultAuthStore();
+    return {
+      version: 1,
+      users: Array.isArray(parsed.users) ? parsed.users : [],
+      tokens: Array.isArray(parsed.tokens) ? parsed.tokens : [],
+      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+    };
+  } catch (err) {
+    console.error('[auth] failed to load auth store:', err instanceof Error ? err.message : String(err));
+    return defaultAuthStore();
+  }
+};
+
+let authStore = loadAuthStore();
+
+const saveAuthStore = () => {
+  mkdirSync(authDataDir, { recursive: true });
+  writeFileSync(authDataPath, JSON.stringify(authStore, null, 2));
+};
+
+const createAuthTokenRecord = (userId, createdByUserId, ttlHours, label) => {
+  const plainToken = createOpaqueToken();
+  const createdAt = nowIso();
+  const expiresAt = ttlHours && ttlHours > 0
+    ? new Date(Date.now() + Math.max(1, ttlHours) * 3600 * 1000).toISOString()
+    : null;
+  const record = {
+    id: createId('tok'),
+    userId,
+    createdByUserId,
+    label: String(label ?? '').trim() || null,
+    tokenHash: hashToken(plainToken),
+    createdAt,
+    expiresAt,
+    usedAt: null,
+    lastUsedAt: null,
+    revokedAt: null,
+  };
+  authStore.tokens.push(record);
+  return { record, plainToken };
+};
+
+const isTokenActive = (token, nowMs = Date.now()) => {
+  if (token.revokedAt) return false;
+  if (!token.expiresAt) return true;
+  return Date.parse(token.expiresAt) > nowMs;
+};
+
+const bootstrapInitialAdmin = () => {
+  if (authStore.users.length > 0) return;
+
+  const adminUser = {
+    id: createId('usr'),
+    username: sanitizeUsername(authInitialAdminUsername) || 'admin',
+    role: 'admin',
+    createdAt: nowIso(),
+    disabledAt: null,
+  };
+  authStore.users.push(adminUser);
+
+  const token = authInitialAdminToken || createOpaqueToken();
+  const bootstrapTokenRecord = {
+    id: createId('tok'),
+    userId: adminUser.id,
+    createdByUserId: adminUser.id,
+    label: 'Initial admin token',
+    tokenHash: hashToken(token),
+    createdAt: nowIso(),
+    expiresAt: null,
+    usedAt: null,
+    lastUsedAt: null,
+    revokedAt: null,
+  };
+  authStore.tokens.push(bootstrapTokenRecord);
+  saveAuthStore();
+
+  console.log('[auth] initialized admin user:', adminUser.username);
+  console.log('[auth] initial admin token:', token);
+  if (!authInitialAdminToken) {
+    console.log('[auth] set AUTH_INITIAL_ADMIN_TOKEN to control this value explicitly.');
+  }
+};
+
+const parseCookies = (cookieHeader) => {
+  const cookies = {};
+  const raw = String(cookieHeader ?? '');
+  if (!raw) return cookies;
+  for (const part of raw.split(';')) {
+    const separator = part.indexOf('=');
+    if (separator <= 0) continue;
+    const name = part.slice(0, separator).trim();
+    const value = part.slice(separator + 1).trim();
+    if (!name) continue;
+    cookies[name] = decodeURIComponent(value);
+  }
+  return cookies;
+};
+
+const appendSetCookie = (res, cookieValue) => {
+  const existing = res.getHeader('set-cookie');
+  if (!existing) {
+    res.setHeader('set-cookie', cookieValue);
+    return;
+  }
+  const next = Array.isArray(existing) ? [...existing, cookieValue] : [String(existing), cookieValue];
+  res.setHeader('set-cookie', next);
+};
+
+const shouldUseSecureCookie = (req) => {
+  const forced = (process.env.AUTH_COOKIE_SECURE ?? 'auto').toLowerCase();
+  if (forced === 'true' || forced === '1') return true;
+  if (forced === 'false' || forced === '0') return false;
+  return String(req.headers['x-forwarded-proto'] ?? '').toLowerCase().includes('https');
+};
+
+const setSessionCookie = (req, res, sessionId, rememberDevice) => {
+  const parts = [
+    `${authSessionCookieName}=${encodeURIComponent(sessionId)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+  ];
+  if (shouldUseSecureCookie(req)) parts.push('Secure');
+  if (rememberDevice) parts.push(`Max-Age=${authRememberTtlSeconds}`);
+  appendSetCookie(res, parts.join('; '));
+};
+
+const clearSessionCookie = (req, res) => {
+  const parts = [
+    `${authSessionCookieName}=`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=0',
+  ];
+  if (shouldUseSecureCookie(req)) parts.push('Secure');
+  appendSetCookie(res, parts.join('; '));
+};
+
+const pruneExpiredAuthRecords = () => {
+  const nowMs = Date.now();
+  const sessionsBefore = authStore.sessions.length;
+  const tokensBefore = authStore.tokens.length;
+
+  authStore.sessions = authStore.sessions.filter((session) => Date.parse(session.expiresAt) > nowMs);
+  authStore.tokens = authStore.tokens.filter((token) => {
+    if (token.revokedAt) return false;
+    if (!token.expiresAt) return true;
+    return Date.parse(token.expiresAt) > nowMs;
+  });
+
+  if (sessionsBefore !== authStore.sessions.length || tokensBefore !== authStore.tokens.length) {
+    saveAuthStore();
+  }
+};
+
+const publicUser = (user) => ({
+  id: user.id,
+  username: user.username,
+  role: user.role,
+});
+
+const countActiveAdmins = () => authStore.users.filter((user) => user.role === 'admin' && !user.disabledAt).length;
+
+const clearUserSessions = (userId) => {
+  authStore.sessions = authStore.sessions.filter((session) => session.userId !== userId);
+};
+
+const revokeUserTokens = (userId) => {
+  const revokedAt = nowIso();
+  for (const token of authStore.tokens) {
+    if (token.userId === userId && !token.revokedAt) {
+      token.revokedAt = revokedAt;
+    }
+  }
+};
+
+const findAuthContext = (req) => {
+  pruneExpiredAuthRecords();
+  const cookies = parseCookies(req.headers.cookie);
+  const sessionId = cookies[authSessionCookieName];
+  if (!sessionId) return null;
+
+  const session = authStore.sessions.find((item) => item.id === sessionId);
+  if (!session) return null;
+
+  const user = authStore.users.find((item) => item.id === session.userId && !item.disabledAt);
+  if (!user) return null;
+
+  session.lastSeenAt = nowIso();
+  saveAuthStore();
+  return { session, user };
+};
+
+const createSession = (userId, rememberDevice) => {
+  const ttlSeconds = rememberDevice ? authRememberTtlSeconds : authSessionTtlSeconds;
+  const session = {
+    id: createId('ses'),
+    userId,
+    rememberDevice,
+    createdAt: nowIso(),
+    lastSeenAt: nowIso(),
+    expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
+  };
+  authStore.sessions.push(session);
+  saveAuthStore();
+  return session;
+};
+
+bootstrapInitialAdmin();
+
 const formatIptvOrgVariant = (siteSlug, fileName) => {
   const suffix = '.channels.xml';
   if (!fileName.endsWith(suffix)) return null;
@@ -1173,20 +1415,366 @@ const initializeEPG = async () => {
   }
 };
 
+const getRequestOrigin = (req) => {
+  const protoHeader = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim();
+  const proto = protoHeader || 'http';
+  const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? 'localhost').split(',')[0].trim();
+  return `${proto}://${host}`;
+};
+
+const isProtectedPath = (path) => (
+  path.startsWith('/hdhomerun/') ||
+  path.startsWith('/hdhomerun-stream/') ||
+  path.startsWith('/hdhomerun-radio/') ||
+  path.startsWith('/hdhomerun-transcode/') ||
+  path === '/stream-info' ||
+  path.startsWith('/epg/')
+);
+
 createServer(async (req, res) => {
   try {
     const method = req.method ?? 'GET';
-    const path = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`).pathname;
+    const reqUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+    const path = reqUrl.pathname;
 
-    const isEpgPostRoute = method === 'POST' && (
-      path === '/epg/configure' ||
-      path === '/epg/refresh' ||
-      path === '/epg/iptv-org/apply' ||
-      path === '/epg/sidecar/rebuild'
-    );
-    if (method !== 'GET' && method !== 'HEAD' && !isEpgPostRoute) {
+    if (method !== 'GET' && method !== 'HEAD' && method !== 'POST') {
       respond(res, 405, 'Method Not Allowed');
       return;
+    }
+
+    if (path === '/auth/me') {
+      const authContext = findAuthContext(req);
+      if (!authContext) {
+        respond(res, 200, JSON.stringify({ authenticated: false }), 'application/json; charset=utf-8');
+        return;
+      }
+      respond(
+        res,
+        200,
+        JSON.stringify({ authenticated: true, user: publicUser(authContext.user) }),
+        'application/json; charset=utf-8',
+      );
+      return;
+    }
+
+    if (method === 'POST' && path === '/auth/exchange-token') {
+      try {
+        const payload = await readJsonBody(req);
+        const rawToken = String(payload.token ?? '').trim();
+        const rememberDevice = payload.rememberDevice !== false;
+
+        if (!rawToken) {
+          respond(res, 400, JSON.stringify({ error: 'Token is required' }), 'application/json; charset=utf-8');
+          return;
+        }
+
+        const tokenHash = hashToken(rawToken);
+        const tokenRecord = authStore.tokens.find((token) =>
+          token.tokenHash === tokenHash &&
+          isTokenActive(token));
+
+        if (!tokenRecord) {
+          respond(res, 401, JSON.stringify({ error: 'Token is invalid or expired' }), 'application/json; charset=utf-8');
+          return;
+        }
+
+        const user = authStore.users.find((item) => item.id === tokenRecord.userId && !item.disabledAt);
+        if (!user) {
+          respond(res, 401, JSON.stringify({ error: 'Token user is no longer active' }), 'application/json; charset=utf-8');
+          return;
+        }
+
+        tokenRecord.lastUsedAt = nowIso();
+        const session = createSession(user.id, rememberDevice);
+        setSessionCookie(req, res, session.id, rememberDevice);
+        saveAuthStore();
+
+        respond(
+          res,
+          200,
+          JSON.stringify({ authenticated: true, user: publicUser(user) }),
+          'application/json; charset=utf-8',
+        );
+      } catch {
+        respond(res, 400, JSON.stringify({ error: 'Invalid request body' }), 'application/json; charset=utf-8');
+      }
+      return;
+    }
+
+    if (method === 'POST' && path === '/auth/logout') {
+      const cookies = parseCookies(req.headers.cookie);
+      const sessionId = cookies[authSessionCookieName];
+      if (sessionId) {
+        authStore.sessions = authStore.sessions.filter((session) => session.id !== sessionId);
+        saveAuthStore();
+      }
+      clearSessionCookie(req, res);
+      respond(res, 200, JSON.stringify({ ok: true }), 'application/json; charset=utf-8');
+      return;
+    }
+
+    if (path.startsWith('/auth/admin/')) {
+      const authContext = findAuthContext(req);
+      if (!authContext) {
+        respond(res, 401, JSON.stringify({ error: 'Authentication required' }), 'application/json; charset=utf-8');
+        return;
+      }
+      if (authContext.user.role !== 'admin') {
+        respond(res, 403, JSON.stringify({ error: 'Admin access required' }), 'application/json; charset=utf-8');
+        return;
+      }
+
+      if (method === 'GET' && path === '/auth/admin/users') {
+        const includeDisabled = String(reqUrl.searchParams.get('includeDisabled') ?? '').toLowerCase() === 'true';
+        const nowMs = Date.now();
+        const users = authStore.users
+          .filter((user) => includeDisabled || !user.disabledAt)
+          .map((user) => ({
+            ...publicUser(user),
+            createdAt: user.createdAt,
+            disabledAt: user.disabledAt,
+            pendingInviteCount: authStore.tokens.filter((token) => token.userId === user.id && isTokenActive(token, nowMs)).length,
+          }));
+
+        respond(res, 200, JSON.stringify({ users }), 'application/json; charset=utf-8');
+        return;
+      }
+
+      if (method === 'GET' && path === '/auth/admin/tokens') {
+        const requestedUserId = String(reqUrl.searchParams.get('userId') ?? '').trim();
+        const nowMs = Date.now();
+        const tokens = authStore.tokens
+          .filter((token) => !requestedUserId || token.userId === requestedUserId)
+          .map((token) => ({
+            id: token.id,
+            userId: token.userId,
+            createdByUserId: token.createdByUserId,
+            label: token.label,
+            createdAt: token.createdAt,
+            expiresAt: token.expiresAt,
+            usedAt: token.usedAt,
+            lastUsedAt: token.lastUsedAt,
+            revokedAt: token.revokedAt,
+            status: token.revokedAt
+              ? 'revoked'
+              : isTokenActive(token, nowMs)
+                ? 'active'
+                : 'expired',
+          }))
+          .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+
+        respond(res, 200, JSON.stringify({ tokens }), 'application/json; charset=utf-8');
+        return;
+      }
+
+      if (method === 'POST' && path === '/auth/admin/users') {
+        try {
+          const payload = await readJsonBody(req);
+          const username = sanitizeUsername(payload.username);
+          const role = payload.role === 'admin' ? 'admin' : 'user';
+
+          if (!/^[A-Za-z0-9._-]{3,40}$/.test(username)) {
+            respond(
+              res,
+              400,
+              JSON.stringify({ error: 'Username must be 3-40 chars and use letters, numbers, dot, underscore, or hyphen' }),
+              'application/json; charset=utf-8',
+            );
+            return;
+          }
+
+          const duplicate = authStore.users.find((user) => user.username.toLowerCase() === username.toLowerCase() && !user.disabledAt);
+          if (duplicate) {
+            respond(res, 409, JSON.stringify({ error: 'Username already exists' }), 'application/json; charset=utf-8');
+            return;
+          }
+
+          const user = {
+            id: createId('usr'),
+            username,
+            role,
+            createdAt: nowIso(),
+            disabledAt: null,
+          };
+          authStore.users.push(user);
+          saveAuthStore();
+
+          respond(res, 200, JSON.stringify({ ok: true, user: publicUser(user) }), 'application/json; charset=utf-8');
+        } catch {
+          respond(res, 400, JSON.stringify({ error: 'Invalid request body' }), 'application/json; charset=utf-8');
+        }
+        return;
+      }
+
+      if (method === 'POST' && path === '/auth/admin/users/disable') {
+        try {
+          const payload = await readJsonBody(req);
+          const userId = String(payload.userId ?? '').trim();
+          const user = authStore.users.find((item) => item.id === userId);
+
+          if (!user) {
+            respond(res, 404, JSON.stringify({ error: 'User not found' }), 'application/json; charset=utf-8');
+            return;
+          }
+
+          if (user.disabledAt) {
+            respond(res, 409, JSON.stringify({ error: 'User is already disabled' }), 'application/json; charset=utf-8');
+            return;
+          }
+
+          if (user.id === authContext.user.id) {
+            respond(res, 400, JSON.stringify({ error: 'You cannot disable your own account' }), 'application/json; charset=utf-8');
+            return;
+          }
+
+          if (user.role === 'admin' && countActiveAdmins() <= 1) {
+            respond(res, 400, JSON.stringify({ error: 'Cannot disable the last active admin' }), 'application/json; charset=utf-8');
+            return;
+          }
+
+          user.disabledAt = nowIso();
+          clearUserSessions(user.id);
+          revokeUserTokens(user.id);
+          saveAuthStore();
+
+          respond(res, 200, JSON.stringify({ ok: true }), 'application/json; charset=utf-8');
+        } catch {
+          respond(res, 400, JSON.stringify({ error: 'Invalid request body' }), 'application/json; charset=utf-8');
+        }
+        return;
+      }
+
+      if (method === 'POST' && path === '/auth/admin/users/delete') {
+        try {
+          const payload = await readJsonBody(req);
+          const userId = String(payload.userId ?? '').trim();
+          const user = authStore.users.find((item) => item.id === userId);
+
+          if (!user) {
+            respond(res, 404, JSON.stringify({ error: 'User not found' }), 'application/json; charset=utf-8');
+            return;
+          }
+
+          if (user.id === authContext.user.id) {
+            respond(res, 400, JSON.stringify({ error: 'You cannot delete your own account' }), 'application/json; charset=utf-8');
+            return;
+          }
+
+          if (!user.disabledAt) {
+            respond(res, 400, JSON.stringify({ error: 'Disable this user before deleting them' }), 'application/json; charset=utf-8');
+            return;
+          }
+
+          authStore.users = authStore.users.filter((item) => item.id !== user.id);
+          clearUserSessions(user.id);
+          authStore.tokens = authStore.tokens.filter((token) => token.userId !== user.id);
+          saveAuthStore();
+
+          respond(res, 200, JSON.stringify({ ok: true }), 'application/json; charset=utf-8');
+        } catch {
+          respond(res, 400, JSON.stringify({ error: 'Invalid request body' }), 'application/json; charset=utf-8');
+        }
+        return;
+      }
+
+      if (method === 'POST' && path === '/auth/admin/users/restore') {
+        try {
+          const payload = await readJsonBody(req);
+          const userId = String(payload.userId ?? '').trim();
+          const user = authStore.users.find((item) => item.id === userId);
+
+          if (!user) {
+            respond(res, 404, JSON.stringify({ error: 'User not found' }), 'application/json; charset=utf-8');
+            return;
+          }
+
+          if (!user.disabledAt) {
+            respond(res, 409, JSON.stringify({ error: 'User is already active' }), 'application/json; charset=utf-8');
+            return;
+          }
+
+          user.disabledAt = null;
+          saveAuthStore();
+          respond(res, 200, JSON.stringify({ ok: true }), 'application/json; charset=utf-8');
+        } catch {
+          respond(res, 400, JSON.stringify({ error: 'Invalid request body' }), 'application/json; charset=utf-8');
+        }
+        return;
+      }
+
+      if (method === 'POST' && path === '/auth/admin/tokens') {
+        try {
+          const payload = await readJsonBody(req);
+          const userId = String(payload.userId ?? '');
+          const label = String(payload.label ?? '').trim();
+          const requestedTtlHours = Number(payload.expiresInHours ?? authDefaultTokenTtlHours);
+          const ttlHours = Number.isFinite(requestedTtlHours) && requestedTtlHours > 0
+            ? Math.min(24 * 30, Math.max(1, requestedTtlHours))
+            : null;
+          const user = authStore.users.find((item) => item.id === userId && !item.disabledAt);
+
+          if (!user) {
+            respond(res, 404, JSON.stringify({ error: 'User not found' }), 'application/json; charset=utf-8');
+            return;
+          }
+
+          const { record, plainToken } = createAuthTokenRecord(user.id, authContext.user.id, ttlHours, label);
+          saveAuthStore();
+
+          const inviteUrl = `${getRequestOrigin(req)}/?token=${encodeURIComponent(plainToken)}`;
+          respond(
+            res,
+            200,
+            JSON.stringify({
+              ok: true,
+              token: plainToken,
+              inviteUrl,
+              tokenMeta: {
+                id: record.id,
+                userId: record.userId,
+                label: record.label,
+                createdAt: record.createdAt,
+                expiresAt: record.expiresAt,
+              },
+            }),
+            'application/json; charset=utf-8',
+          );
+        } catch {
+          respond(res, 400, JSON.stringify({ error: 'Invalid request body' }), 'application/json; charset=utf-8');
+        }
+        return;
+      }
+
+      if (method === 'POST' && path === '/auth/admin/tokens/revoke') {
+        try {
+          const payload = await readJsonBody(req);
+          const tokenId = String(payload.tokenId ?? '').trim();
+          const tokenRecord = authStore.tokens.find((token) => token.id === tokenId);
+
+          if (!tokenRecord) {
+            respond(res, 404, JSON.stringify({ error: 'Token not found' }), 'application/json; charset=utf-8');
+            return;
+          }
+
+          tokenRecord.revokedAt = nowIso();
+          saveAuthStore();
+          respond(res, 200, JSON.stringify({ ok: true }), 'application/json; charset=utf-8');
+        } catch {
+          respond(res, 400, JSON.stringify({ error: 'Invalid request body' }), 'application/json; charset=utf-8');
+        }
+        return;
+      }
+
+      respond(res, 404, JSON.stringify({ error: 'Not found' }), 'application/json; charset=utf-8');
+      return;
+    }
+
+    if (isProtectedPath(path)) {
+      const authContext = findAuthContext(req);
+      if (!authContext) {
+        respond(res, 401, 'Unauthorized');
+        return;
+      }
     }
 
     if (path.startsWith('/hdhomerun/')) {
@@ -1210,7 +1798,6 @@ createServer(async (req, res) => {
     }
 
     if (path === '/stream-info') {
-      const reqUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
       const source = reqUrl.searchParams.get('source');
       if (!source) {
         respond(res, 400, JSON.stringify({ error: 'Missing source parameter' }), 'application/json; charset=utf-8');

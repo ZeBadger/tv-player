@@ -44,6 +44,36 @@ type IptvOrgChannelSite = {
   files: IptvOrgChannelFile[];
 };
 
+type AuthUser = {
+  id: string;
+  username: string;
+  role: 'admin' | 'user';
+};
+
+type AuthStatus = {
+  authenticated: boolean;
+  user?: AuthUser;
+};
+
+type AdminUser = AuthUser & {
+  createdAt: string;
+  disabledAt: string | null;
+  pendingInviteCount: number;
+};
+
+type AdminTokenMeta = {
+  id: string;
+  userId: string;
+  createdByUserId: string;
+  label: string | null;
+  createdAt: string;
+  expiresAt: string | null;
+  usedAt: string | null;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  status: 'active' | 'expired' | 'revoked';
+};
+
 const SETTINGS_KEY = 'tv-player-settings-v1';
 const EPG_LAST_SITE_KEY = 'epg-last-site-slug';
 const MAX_RETRIES = 3;
@@ -93,10 +123,26 @@ const saveSettings = (settings: AppSettings): void => {
 const app = document.getElementById('app')!;
 
 app.innerHTML = `
+  <section id="auth-gate" class="auth-gate" hidden>
+    <div class="auth-gate-card" role="dialog" aria-modal="true" aria-label="Sign in with access token">
+      <h2>Welcome to TV Player</h2>
+      <p>Paste your access token to sign in. This device can stay signed in.</p>
+      <label for="auth-token-input">Access token</label>
+      <input id="auth-token-input" type="text" autocomplete="off" placeholder="Paste token here">
+      <label class="auth-remember-row">
+        <input id="auth-remember-device" type="checkbox" checked>
+        <span>Remember this device</span>
+      </label>
+      <button id="auth-token-submit" type="button">Sign in</button>
+      <div id="auth-gate-status" class="auth-gate-status" aria-live="polite"></div>
+    </div>
+  </section>
+
   <div class="layout">
     <aside class="sidebar">
       <header class="sidebar-header">
         <h1>TV Player</h1>
+        <p id="current-user" class="current-user" hidden></p>
         <div class="channel-controls">
           <div class="controls-row">
             <div class="control-inline">
@@ -127,6 +173,8 @@ app.innerHTML = `
       <div class="sidebar-footer">
         <button id="visibility-btn" class="hidden-settings-btn" type="button">Channel visibility</button>
         <button id="epg-settings-btn" class="hidden-settings-btn" type="button">EPG settings</button>
+        <button id="admin-btn" class="hidden-settings-btn" type="button" hidden>Admin</button>
+        <button id="sign-out-btn" class="hidden-settings-btn" type="button" hidden>Sign out</button>
       </div>
       <div class="app-credit">Created by <a href="https://github.com/ZeBadger" target="_blank" rel="noopener noreferrer">ZeBadger</a></div>
     </aside>
@@ -214,6 +262,85 @@ app.innerHTML = `
     </div>
   </section>
 
+  <section id="admin-modal" class="admin-modal" hidden>
+    <div class="admin-dialog" role="dialog" aria-modal="true" aria-label="Admin access management">
+      <div class="admin-header">
+        <h2>Access Management</h2>
+        <button id="admin-close" type="button">Close</button>
+      </div>
+      <div class="admin-grid">
+        <div class="admin-column">
+          <div class="admin-section">
+            <h3>Create user</h3>
+            <div class="admin-form-grid">
+              <label class="admin-field">
+                <span>Username</span>
+                <input id="admin-username-input" type="text" autocomplete="off" placeholder="alice">
+              </label>
+              <label class="admin-field">
+                <span>Role</span>
+                <select id="admin-role-select">
+                  <option value="user">User</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </label>
+            </div>
+            <button id="admin-create-user-btn" type="button" class="admin-primary-btn">Create user</button>
+          </div>
+          <div class="admin-section admin-users-section">
+            <div class="admin-section-header">
+              <h3>Users</h3>
+              <p id="admin-users-summary" class="admin-muted"></p>
+            </div>
+            <div id="admin-user-list" class="admin-list"></div>
+          </div>
+        </div>
+        <div class="admin-column">
+          <div class="admin-section">
+            <h3 id="admin-selected-user-heading">Select a user</h3>
+            <p id="admin-selected-user-meta" class="admin-muted">Choose a user to manage access tokens.</p>
+            <div class="admin-user-actions">
+              <button id="admin-disable-user-btn" type="button" class="admin-danger-btn">Disable user</button>
+              <button id="admin-restore-user-btn" type="button" class="admin-neutral-btn">Restore user</button>
+              <button id="admin-delete-user-btn" type="button" class="admin-danger-btn">Delete user</button>
+            </div>
+            <div class="admin-form-grid admin-token-form-grid">
+              <label class="admin-field admin-field-wide">
+                <span>Token label</span>
+                <input id="admin-token-label-input" type="text" autocomplete="off" placeholder="Alice phone">
+              </label>
+              <label class="admin-field">
+                <span>Expires in hours (optional)</span>
+                <input id="admin-token-hours-input" type="number" min="1" max="720" step="1" placeholder="Leave blank for no expiry">
+              </label>
+            </div>
+            <button id="admin-generate-token-btn" type="button" class="admin-primary-btn">Generate token</button>
+          </div>
+          <div id="admin-token-output" class="admin-section admin-token-output" hidden>
+            <h3>Latest token</h3>
+            <label class="admin-field">
+              <span>Invite URL</span>
+              <textarea id="admin-invite-url" readonly rows="2"></textarea>
+            </label>
+            <label class="admin-field">
+              <span>Token</span>
+              <textarea id="admin-token-value" readonly rows="2"></textarea>
+            </label>
+            <div class="admin-actions-row">
+              <button id="admin-copy-invite-btn" type="button">Copy invite URL</button>
+              <button id="admin-copy-token-btn" type="button">Copy token</button>
+            </div>
+          </div>
+          <div class="admin-section admin-tokens-section">
+            <h3>Tokens</h3>
+            <div id="admin-token-list" class="admin-list"></div>
+          </div>
+          <div id="admin-status" class="admin-status" aria-live="polite"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <section id="visibility-modal" class="visibility-modal" hidden>
     <div class="visibility-dialog" role="dialog" aria-modal="true" aria-label="Channel visibility settings">
       <div class="visibility-header">
@@ -278,6 +405,36 @@ const modalTvFilterRowEl = document.getElementById('modal-tv-filter-row')!;
 const visibleChannelListEl = document.getElementById('visible-channel-list')!;
 const hiddenChannelListEl = document.getElementById('hidden-channel-list')!;
 const showAllBtn = document.getElementById('show-all-btn') as HTMLButtonElement;
+const authGateEl = document.getElementById('auth-gate')!;
+const authTokenInputEl = document.getElementById('auth-token-input') as HTMLInputElement;
+const authRememberDeviceEl = document.getElementById('auth-remember-device') as HTMLInputElement;
+const authTokenSubmitBtn = document.getElementById('auth-token-submit') as HTMLButtonElement;
+const authGateStatusEl = document.getElementById('auth-gate-status')!;
+const currentUserEl = document.getElementById('current-user')!;
+const adminBtn = document.getElementById('admin-btn') as HTMLButtonElement;
+const signOutBtn = document.getElementById('sign-out-btn') as HTMLButtonElement;
+const adminModal = document.getElementById('admin-modal')!;
+const adminCloseBtn = document.getElementById('admin-close') as HTMLButtonElement;
+const adminUsernameInputEl = document.getElementById('admin-username-input') as HTMLInputElement;
+const adminRoleSelectEl = document.getElementById('admin-role-select') as HTMLSelectElement;
+const adminCreateUserBtn = document.getElementById('admin-create-user-btn') as HTMLButtonElement;
+const adminUsersSummaryEl = document.getElementById('admin-users-summary')!;
+const adminUserListEl = document.getElementById('admin-user-list')!;
+const adminSelectedUserHeadingEl = document.getElementById('admin-selected-user-heading')!;
+const adminSelectedUserMetaEl = document.getElementById('admin-selected-user-meta')!;
+const adminDisableUserBtn = document.getElementById('admin-disable-user-btn') as HTMLButtonElement;
+const adminRestoreUserBtn = document.getElementById('admin-restore-user-btn') as HTMLButtonElement;
+const adminDeleteUserBtn = document.getElementById('admin-delete-user-btn') as HTMLButtonElement;
+const adminTokenLabelInputEl = document.getElementById('admin-token-label-input') as HTMLInputElement;
+const adminTokenHoursInputEl = document.getElementById('admin-token-hours-input') as HTMLInputElement;
+const adminGenerateTokenBtn = document.getElementById('admin-generate-token-btn') as HTMLButtonElement;
+const adminTokenOutputEl = document.getElementById('admin-token-output')!;
+const adminInviteUrlEl = document.getElementById('admin-invite-url') as HTMLTextAreaElement;
+const adminTokenValueEl = document.getElementById('admin-token-value') as HTMLTextAreaElement;
+const adminCopyInviteBtn = document.getElementById('admin-copy-invite-btn') as HTMLButtonElement;
+const adminCopyTokenBtn = document.getElementById('admin-copy-token-btn') as HTMLButtonElement;
+const adminTokenListEl = document.getElementById('admin-token-list')!;
+const adminStatusEl = document.getElementById('admin-status')!;
 const captionsToggleBtn = document.getElementById('captions-toggle') as HTMLButtonElement;
 const guideSnippetsToggleBtn = document.getElementById('guide-snippets-toggle') as HTMLButtonElement;
 const epgSettingsBtn = document.getElementById('epg-settings-btn') as HTMLButtonElement;
@@ -322,9 +479,457 @@ let filteredIptvOrgSites: IptvOrgChannelSite[] = [];
 let pendingGuideReloadAfterSidecar = false;
 let epgAutoReloadInProgress = false;
 let currentSidecarSourceUrl = 'http://iptv-epg:3000/guide.xml';
+let currentAuthUser: AuthUser | null = null;
+let adminUsers: AdminUser[] = [];
+let adminTokens: AdminTokenMeta[] = [];
+let selectedAdminUserId: string | null = null;
+let appInitialized = false;
 
 initPlayer(videoEl);
 videoEl.setAttribute('controlsList', 'nodownload noplaybackrate');
+
+const setAuthGateVisible = (visible: boolean) => {
+  authGateEl.hidden = !visible;
+  if (visible) {
+    authTokenInputEl.focus();
+    authTokenInputEl.select();
+  }
+};
+
+const setAuthStatusMessage = (message: string, isError = false) => {
+  authGateStatusEl.textContent = message;
+  authGateStatusEl.classList.toggle('error', isError);
+};
+
+const formatDateTime = (value: string | null | undefined) => {
+  if (!value) return 'Never';
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? 'Never' : parsed.toLocaleString();
+};
+
+const setAdminStatus = (message: string, isError = false) => {
+  adminStatusEl.textContent = message;
+  adminStatusEl.classList.toggle('error', isError);
+};
+
+const hideAdminTokenOutput = () => {
+  adminTokenOutputEl.hidden = true;
+  adminInviteUrlEl.value = '';
+  adminTokenValueEl.value = '';
+};
+
+const updateAdminActionState = () => {
+  const isAdmin = currentAuthUser?.role === 'admin';
+  adminBtn.hidden = !isAdmin;
+  adminGenerateTokenBtn.disabled = !isAdmin || !selectedAdminUserId;
+  adminDisableUserBtn.disabled = !isAdmin || !selectedAdminUserId;
+  adminRestoreUserBtn.disabled = !isAdmin || !selectedAdminUserId;
+  adminDeleteUserBtn.disabled = !isAdmin || !selectedAdminUserId;
+  if (!isAdmin) {
+    adminModal.hidden = true;
+    hideAdminTokenOutput();
+    setAdminStatus('');
+  }
+};
+
+const applyAuthUserUi = (user: AuthUser | null) => {
+  currentAuthUser = user;
+  currentUserEl.hidden = !user;
+  if (user) {
+    const roleLabel = user.role === 'admin' ? 'Admin' : 'User';
+    currentUserEl.textContent = `${user.username} (${roleLabel})`;
+  } else {
+    currentUserEl.textContent = '';
+  }
+  signOutBtn.hidden = !user;
+  updateAdminActionState();
+};
+
+const clearTokenFromAddressBar = () => {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has('token')) return;
+  url.searchParams.delete('token');
+  const next = `${url.pathname}${url.search}${url.hash}`;
+  window.history.replaceState({}, '', next);
+};
+
+const fetchAuthStatus = async (): Promise<AuthStatus> => {
+  const res = await fetch('/auth/me', { cache: 'no-store' });
+  if (!res.ok) return { authenticated: false };
+  return await res.json();
+};
+
+const exchangeTokenForSession = async (token: string, rememberDevice: boolean): Promise<AuthUser> => {
+  const res = await fetch('/auth/exchange-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, rememberDevice }),
+  });
+
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok || !payload?.user) {
+    throw new Error(payload?.error || 'Sign-in failed');
+  }
+
+  return payload.user as AuthUser;
+};
+
+const ensureAuthenticated = async (): Promise<boolean> => {
+  const tokenFromUrl = new URL(window.location.href).searchParams.get('token');
+
+  if (tokenFromUrl) {
+    setAuthGateVisible(true);
+    authTokenInputEl.value = tokenFromUrl;
+    setAuthStatusMessage('Signing in with your token...');
+    try {
+      const user = await exchangeTokenForSession(tokenFromUrl, true);
+      clearTokenFromAddressBar();
+      applyAuthUserUi(user);
+      setAuthGateVisible(false);
+      return true;
+    } catch (err) {
+      setAuthStatusMessage(err instanceof Error ? err.message : 'Sign-in failed', true);
+      return false;
+    }
+  }
+
+  try {
+    const status = await fetchAuthStatus();
+    if (status.authenticated && status.user) {
+      applyAuthUserUi(status.user);
+      setAuthGateVisible(false);
+      return true;
+    }
+  } catch {
+    // Fall through to sign-in gate.
+  }
+
+  applyAuthUserUi(null);
+  setAuthStatusMessage('Enter your access token to continue.');
+  setAuthGateVisible(true);
+  return false;
+};
+
+const adminApiJson = async <T>(input: string, init?: RequestInit): Promise<T> => {
+  const res = await fetch(input, init);
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(typeof payload?.error === 'string' ? payload.error : 'Admin request failed');
+  }
+  return payload as T;
+};
+
+const syncAdminSelection = () => {
+  if (adminUsers.length === 0) {
+    selectedAdminUserId = null;
+    return;
+  }
+  if (!selectedAdminUserId || !adminUsers.some((user) => user.id === selectedAdminUserId)) {
+    selectedAdminUserId = adminUsers[0].id;
+  }
+};
+
+const renderAdminUsers = () => {
+  const disabledCount = adminUsers.filter((user) => Boolean(user.disabledAt)).length;
+  const activeCount = adminUsers.length - disabledCount;
+  adminUsersSummaryEl.textContent = `${activeCount} active • ${disabledCount} disabled`;
+  adminUserListEl.innerHTML = '';
+
+  if (adminUsers.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'admin-empty';
+    empty.textContent = 'No users found.';
+    adminUserListEl.appendChild(empty);
+    return;
+  }
+
+  const list = document.createElement('div');
+  list.className = 'admin-items';
+
+  for (const user of adminUsers) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'admin-user-btn';
+    button.classList.toggle('selected', user.id === selectedAdminUserId);
+
+    const name = document.createElement('span');
+    name.className = 'admin-user-name';
+    name.textContent = `${user.username} (${user.role})${user.disabledAt ? ' • Disabled' : ''}`;
+
+    const meta = document.createElement('span');
+    meta.className = 'admin-user-meta';
+    meta.textContent = `Created ${formatDateTime(user.createdAt)} • ${user.pendingInviteCount} active token${user.pendingInviteCount === 1 ? '' : 's'}`;
+
+    button.appendChild(name);
+    button.appendChild(meta);
+    button.addEventListener('click', () => {
+      if (user.id === selectedAdminUserId) return;
+      selectedAdminUserId = user.id;
+      hideAdminTokenOutput();
+      renderAdminUsers();
+      void refreshAdminTokensForSelection();
+    });
+    list.appendChild(button);
+  }
+
+  adminUserListEl.appendChild(list);
+};
+
+const revokeAdminToken = async (tokenId: string) => {
+  setAdminStatus('Revoking token...');
+  try {
+    await adminApiJson<{ ok: true }>('/auth/admin/tokens/revoke', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tokenId }),
+    });
+    await refreshAdminData(true);
+    setAdminStatus('Token revoked.');
+  } catch (err) {
+    setAdminStatus(err instanceof Error ? err.message : 'Failed to revoke token', true);
+  }
+};
+
+const disableSelectedAdminUser = async () => {
+  const selectedUser = adminUsers.find((user) => user.id === selectedAdminUserId);
+  if (!selectedUser) {
+    setAdminStatus('Select a user first.', true);
+    return;
+  }
+
+  if (selectedUser.id === currentAuthUser?.id) {
+    setAdminStatus('You cannot disable your own account.', true);
+    return;
+  }
+
+  if (selectedUser.disabledAt) {
+    setAdminStatus('This user is already disabled.', true);
+    return;
+  }
+
+  const confirmed = window.confirm(`Disable ${selectedUser.username}? They will lose access immediately.`);
+  if (!confirmed) return;
+
+  setAdminStatus(`Disabling ${selectedUser.username}...`);
+  adminDisableUserBtn.disabled = true;
+  try {
+    await adminApiJson<{ ok: true }>('/auth/admin/users/disable', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: selectedUser.id }),
+    });
+    hideAdminTokenOutput();
+    await refreshAdminData(true);
+    setAdminStatus(`Disabled ${selectedUser.username}.`);
+  } catch (err) {
+    setAdminStatus(err instanceof Error ? err.message : 'Failed to disable user', true);
+  } finally {
+    adminDisableUserBtn.disabled = false;
+  }
+};
+
+const restoreSelectedAdminUser = async () => {
+  const selectedUser = adminUsers.find((user) => user.id === selectedAdminUserId);
+  if (!selectedUser) {
+    setAdminStatus('Select a user first.', true);
+    return;
+  }
+
+  if (!selectedUser.disabledAt) {
+    setAdminStatus('This user is already active.', true);
+    return;
+  }
+
+  const confirmed = window.confirm(`Restore ${selectedUser.username}? They will be able to sign in again.`);
+  if (!confirmed) return;
+
+  setAdminStatus(`Restoring ${selectedUser.username}...`);
+  adminRestoreUserBtn.disabled = true;
+  try {
+    await adminApiJson<{ ok: true }>('/auth/admin/users/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: selectedUser.id }),
+    });
+    hideAdminTokenOutput();
+    await refreshAdminData(true);
+    setAdminStatus(`Restored ${selectedUser.username}.`);
+  } catch (err) {
+    setAdminStatus(err instanceof Error ? err.message : 'Failed to restore user', true);
+  } finally {
+    adminRestoreUserBtn.disabled = false;
+  }
+};
+
+const deleteSelectedAdminUser = async () => {
+  const selectedUser = adminUsers.find((user) => user.id === selectedAdminUserId);
+  if (!selectedUser) {
+    setAdminStatus('Select a user first.', true);
+    return;
+  }
+
+  if (selectedUser.id === currentAuthUser?.id) {
+    setAdminStatus('You cannot delete your own account.', true);
+    return;
+  }
+
+  const confirmed = window.confirm(`Delete ${selectedUser.username}? This permanently removes the user and all of their tokens.`);
+  if (!confirmed) return;
+
+  setAdminStatus(`Deleting ${selectedUser.username}...`);
+  adminDeleteUserBtn.disabled = true;
+  try {
+    await adminApiJson<{ ok: true }>('/auth/admin/users/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: selectedUser.id }),
+    });
+    hideAdminTokenOutput();
+    await refreshAdminData(true);
+    setAdminStatus(`Deleted ${selectedUser.username}.`);
+  } catch (err) {
+    setAdminStatus(err instanceof Error ? err.message : 'Failed to delete user', true);
+  } finally {
+    adminDeleteUserBtn.disabled = false;
+  }
+};
+
+const renderAdminTokens = () => {
+  const selectedUser = adminUsers.find((user) => user.id === selectedAdminUserId) ?? null;
+  const selectedIsDisabled = Boolean(selectedUser?.disabledAt);
+  const isSelf = selectedUser?.id === currentAuthUser?.id;
+  adminSelectedUserHeadingEl.textContent = selectedUser
+    ? `${selectedUser.username} (${selectedUser.role})`
+    : 'Select a user';
+  adminSelectedUserMetaEl.textContent = selectedUser
+    ? `Created ${formatDateTime(selectedUser.createdAt)} • ${selectedIsDisabled ? `Disabled ${formatDateTime(selectedUser.disabledAt)}` : 'Active'} • ${selectedUser.pendingInviteCount} active token${selectedUser.pendingInviteCount === 1 ? '' : 's'}`
+    : 'Choose a user to manage access tokens.';
+  adminGenerateTokenBtn.disabled = !selectedUser || selectedIsDisabled;
+  adminDisableUserBtn.disabled = !selectedUser || selectedIsDisabled || isSelf;
+  adminRestoreUserBtn.disabled = !selectedUser || !selectedIsDisabled;
+  adminDeleteUserBtn.disabled = !selectedUser || !selectedIsDisabled || isSelf;
+
+  adminTokenListEl.innerHTML = '';
+  if (!selectedUser) {
+    const empty = document.createElement('p');
+    empty.className = 'admin-empty';
+    empty.textContent = 'Select a user to view tokens.';
+    adminTokenListEl.appendChild(empty);
+    return;
+  }
+
+  if (adminTokens.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'admin-empty';
+    empty.textContent = 'No tokens for this user yet.';
+    adminTokenListEl.appendChild(empty);
+    return;
+  }
+
+  const list = document.createElement('div');
+  list.className = 'admin-items';
+
+  for (const token of adminTokens) {
+    const card = document.createElement('div');
+    card.className = 'admin-token-card';
+
+    const topRow = document.createElement('div');
+    topRow.className = 'admin-token-row';
+
+    const title = document.createElement('div');
+    title.className = 'admin-token-title';
+    title.textContent = token.label || 'Untitled token';
+
+    const status = document.createElement('span');
+    status.className = `admin-token-status ${token.status}`;
+    status.textContent = token.status;
+
+    topRow.appendChild(title);
+    topRow.appendChild(status);
+    card.appendChild(topRow);
+
+    const meta = document.createElement('div');
+    meta.className = 'admin-token-meta';
+    const expiryLabel = token.expiresAt ? `Expires ${formatDateTime(token.expiresAt)}` : 'No expiry';
+    meta.textContent = `Created ${formatDateTime(token.createdAt)} • ${expiryLabel} • Last used ${formatDateTime(token.lastUsedAt)}`;
+    card.appendChild(meta);
+
+    if (token.status === 'active') {
+      const revokeBtn = document.createElement('button');
+      revokeBtn.type = 'button';
+      revokeBtn.className = 'admin-token-action';
+      revokeBtn.textContent = 'Revoke';
+      revokeBtn.addEventListener('click', () => {
+        void revokeAdminToken(token.id);
+      });
+      card.appendChild(revokeBtn);
+    }
+
+    list.appendChild(card);
+  }
+
+  adminTokenListEl.appendChild(list);
+};
+
+const refreshAdminTokensForSelection = async () => {
+  if (!selectedAdminUserId) {
+    adminTokens = [];
+    renderAdminTokens();
+    return;
+  }
+
+  setAdminStatus('Loading tokens...');
+  try {
+    const query = new URLSearchParams({ userId: selectedAdminUserId });
+    const payload = await adminApiJson<{ tokens: AdminTokenMeta[] }>(`/auth/admin/tokens?${query.toString()}`);
+    adminTokens = payload.tokens;
+    renderAdminTokens();
+    setAdminStatus('');
+  } catch (err) {
+    adminTokens = [];
+    renderAdminTokens();
+    setAdminStatus(err instanceof Error ? err.message : 'Failed to load tokens', true);
+  }
+};
+
+const refreshAdminData = async (keepStatus = false) => {
+  const previousSelectedUserId = selectedAdminUserId;
+  if (!keepStatus) {
+    setAdminStatus('Loading access data...');
+  }
+
+  const payload = await adminApiJson<{ users: AdminUser[] }>('/auth/admin/users?includeDisabled=true');
+  adminUsers = payload.users;
+  syncAdminSelection();
+  renderAdminUsers();
+  if (previousSelectedUserId !== selectedAdminUserId) {
+    hideAdminTokenOutput();
+  }
+  await refreshAdminTokensForSelection();
+};
+
+const copyAdminFieldValue = async (field: HTMLTextAreaElement, successMessage: string) => {
+  const value = field.value.trim();
+  if (!value) {
+    setAdminStatus('Nothing to copy yet.', true);
+    return;
+  }
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+    } else {
+      field.focus();
+      field.select();
+      document.execCommand('copy');
+    }
+    setAdminStatus(successMessage);
+  } catch {
+    field.focus();
+    field.select();
+    setAdminStatus('Copy failed. Copy the selected text manually.', true);
+  }
+};
 
 const getCaptionTracks = (): TextTrack[] => {
   const tracks: TextTrack[] = [];
@@ -1597,6 +2202,174 @@ epgSiteSelectEl.addEventListener('change', () => {
 });
 epgApplySiteFileBtn.addEventListener('click', applySelectedIptvOrgFile);
 
+adminBtn.addEventListener('click', () => {
+  if (currentAuthUser?.role !== 'admin') return;
+  adminModal.hidden = false;
+  void refreshAdminData().catch((err) => {
+    setAdminStatus(err instanceof Error ? err.message : 'Failed to load access data', true);
+  });
+});
+
+adminCloseBtn.addEventListener('click', () => {
+  adminModal.hidden = true;
+});
+
+adminModal.addEventListener('click', (event) => {
+  if (event.target === adminModal) {
+    adminModal.hidden = true;
+  }
+});
+
+adminCreateUserBtn.addEventListener('click', () => {
+  void (async () => {
+    const username = adminUsernameInputEl.value.trim();
+    const role = adminRoleSelectEl.value === 'admin' ? 'admin' : 'user';
+
+    if (!/^[A-Za-z0-9._-]{3,40}$/.test(username)) {
+      setAdminStatus('Username must be 3-40 chars and use letters, numbers, dot, underscore, or hyphen.', true);
+      adminUsernameInputEl.focus();
+      return;
+    }
+
+    adminCreateUserBtn.disabled = true;
+    setAdminStatus('Creating user...');
+    try {
+      const payload = await adminApiJson<{ ok: true; user: AuthUser }>('/auth/admin/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, role }),
+      });
+      adminUsernameInputEl.value = '';
+      adminRoleSelectEl.value = 'user';
+      selectedAdminUserId = payload.user.id;
+      await refreshAdminData(true);
+      setAdminStatus(`Created user ${payload.user.username}.`);
+    } catch (err) {
+      setAdminStatus(err instanceof Error ? err.message : 'Failed to create user', true);
+    } finally {
+      adminCreateUserBtn.disabled = false;
+    }
+  })();
+});
+
+adminDisableUserBtn.addEventListener('click', () => {
+  void disableSelectedAdminUser();
+});
+
+adminRestoreUserBtn.addEventListener('click', () => {
+  void restoreSelectedAdminUser();
+});
+
+adminDeleteUserBtn.addEventListener('click', () => {
+  void deleteSelectedAdminUser();
+});
+
+adminGenerateTokenBtn.addEventListener('click', () => {
+  void (async () => {
+    if (!selectedAdminUserId) {
+      setAdminStatus('Select a user first.', true);
+      return;
+    }
+
+    const expiresInHoursRaw = adminTokenHoursInputEl.value.trim();
+    let expiresInHours: number | null = null;
+    if (expiresInHoursRaw) {
+      const parsed = Number(expiresInHoursRaw);
+      if (!Number.isFinite(parsed) || parsed < 1 || parsed > 720) {
+        setAdminStatus('Optional expiry must be between 1 and 720 hours.', true);
+        adminTokenHoursInputEl.focus();
+        return;
+      }
+      expiresInHours = parsed;
+    }
+
+    adminGenerateTokenBtn.disabled = true;
+    setAdminStatus('Generating token...');
+    try {
+      const payload = await adminApiJson<{
+        ok: true;
+        token: string;
+        inviteUrl: string;
+        tokenMeta: AdminTokenMeta;
+      }>('/auth/admin/tokens', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: selectedAdminUserId,
+          label: adminTokenLabelInputEl.value.trim(),
+          ...(expiresInHours ? { expiresInHours } : {}),
+        }),
+      });
+      adminInviteUrlEl.value = payload.inviteUrl;
+      adminTokenValueEl.value = payload.token;
+      adminTokenOutputEl.hidden = false;
+      adminTokenLabelInputEl.value = '';
+      adminTokenHoursInputEl.value = '';
+      await refreshAdminData(true);
+      setAdminStatus('Reusable token generated. It will keep working until you revoke it.');
+    } catch (err) {
+      setAdminStatus(err instanceof Error ? err.message : 'Failed to generate token', true);
+    } finally {
+      adminGenerateTokenBtn.disabled = false;
+    }
+  })();
+});
+
+adminCopyInviteBtn.addEventListener('click', () => {
+  void copyAdminFieldValue(adminInviteUrlEl, 'Invite URL copied.');
+});
+
+adminCopyTokenBtn.addEventListener('click', () => {
+  void copyAdminFieldValue(adminTokenValueEl, 'Token copied.');
+});
+
+authTokenSubmitBtn.addEventListener('click', () => {
+  void (async () => {
+    const token = authTokenInputEl.value.trim();
+    if (!token) {
+      setAuthStatusMessage('Paste your access token to sign in.', true);
+      authTokenInputEl.focus();
+      return;
+    }
+
+    authTokenSubmitBtn.disabled = true;
+    setAuthStatusMessage('Signing in...');
+    try {
+      const user = await exchangeTokenForSession(token, authRememberDeviceEl.checked);
+      clearTokenFromAddressBar();
+      applyAuthUserUi(user);
+      setAuthGateVisible(false);
+      if (!appInitialized) {
+        await initializeApp();
+        appInitialized = true;
+      }
+    } catch (err) {
+      setAuthStatusMessage(err instanceof Error ? err.message : 'Sign-in failed', true);
+    } finally {
+      authTokenSubmitBtn.disabled = false;
+    }
+  })();
+});
+
+authTokenInputEl.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    authTokenSubmitBtn.click();
+  }
+});
+
+signOutBtn.addEventListener('click', () => {
+  void (async () => {
+    signOutBtn.disabled = true;
+    try {
+      await fetch('/auth/logout', { method: 'POST' });
+    } catch {
+      // Continue with local sign-out state reset even if request fails.
+    }
+    window.location.reload();
+  })();
+});
+
 const refreshNowNextAndUi = async () => {
   await fetchNowNextData();
   renderChannels();
@@ -1645,4 +2418,12 @@ const initializeApp = async () => {
   }
 };
 
-initializeApp();
+const bootstrap = async () => {
+  const authenticated = await ensureAuthenticated();
+  if (!authenticated) return;
+  if (appInitialized) return;
+  await initializeApp();
+  appInitialized = true;
+};
+
+void bootstrap();
