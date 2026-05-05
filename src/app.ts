@@ -282,6 +282,7 @@ app.innerHTML = `
     </aside>
     <main class="main">
       <video id="video" class="video-player" controls autoplay></video>
+      <button id="resume-play-btn" class="resume-play-btn" type="button" hidden>Play</button>
       <div id="radio-card" class="radio-card" aria-hidden="true">
         <div class="radio-icon">&#9654;</div>
         <div id="radio-name" class="radio-name"></div>
@@ -531,6 +532,7 @@ const channelContainer = document.getElementById('channel-list-container')!;
 const nowPlaying = document.getElementById('now-playing')!;
 const mainEl = document.querySelector('.main')!;
 const radioName = document.getElementById('radio-name')!;
+const resumePlayBtn = document.getElementById('resume-play-btn') as HTMLButtonElement;
 const playbackStatusEl = document.getElementById('playback-status')!;
 const playbackStatusTextEl = document.getElementById('playback-status-text')!;
 const playbackStatusCloseBtn = document.getElementById('playback-status-close') as HTMLButtonElement;
@@ -639,6 +641,7 @@ let adminUsageEvents: AdminUsageEvent[] = [];
 let selectedAdminUserId: string | null = null;
 let appInitialized = false;
 let reopenSettingsAfterSubModalClose = false;
+let pendingScrollToActiveChannel = false;
 
 initPlayer(videoEl);
 videoEl.setAttribute('controlsList', 'nodownload noplaybackrate');
@@ -671,6 +674,24 @@ const hideAdminTokenOutput = () => {
   adminTokenOutputEl.hidden = true;
   adminInviteUrlEl.value = '';
   adminTokenValueEl.value = '';
+};
+
+const scrollActiveChannelIntoView = () => {
+  const activeItem = channelContainer.querySelector('.channel-item.active') as HTMLElement | null;
+  if (activeItem) {
+    activeItem.scrollIntoView({ block: 'nearest' });
+  }
+};
+
+const updateResumePlayButton = () => {
+  if (!activeChannel) {
+    resumePlayBtn.hidden = true;
+    resumePlayBtn.textContent = 'Play';
+    return;
+  }
+
+  resumePlayBtn.textContent = `Play ${activeChannel.GuideNumber} ${activeChannel.GuideName}`;
+  resumePlayBtn.hidden = false;
 };
 
 const updateAdminActionState = () => {
@@ -1533,6 +1554,7 @@ const renderNowPlayingBar = () => {
 };
 
 const startChannelPlayback = (channel: Channel, resetFailures: boolean) => {
+  resumePlayBtn.hidden = true;
   clearRetryTimer();
   clearCaptionDiscovery();
   captionsToggleBtn.disabled = true;
@@ -1579,8 +1601,9 @@ const startChannelPlayback = (channel: Channel, resetFailures: boolean) => {
       if (sessionId !== playSessionId) return;
       if (!activeChannel || channelId(activeChannel) !== channelId(channel)) return;
 
-       if (isAutoplayBlockedMessage(message)) {
+      if (isAutoplayBlockedMessage(message)) {
         setPlaybackStatus('Playback is blocked by browser autoplay policy. Click the video controls or reselect the channel to start.', 'info');
+        updateResumePlayButton();
         return;
       }
 
@@ -1896,6 +1919,13 @@ const renderChannels = () => {
       renderChannels();
     },
   });
+
+  if (pendingScrollToActiveChannel) {
+    pendingScrollToActiveChannel = false;
+    window.requestAnimationFrame(() => {
+      scrollActiveChannelIntoView();
+    });
+  }
 };
 
 syncControlValues();
@@ -1996,9 +2026,15 @@ showAllBtn.addEventListener('click', () => {
 });
 
 videoEl.addEventListener('playing', () => {
+  resumePlayBtn.hidden = true;
   activeChannelFailureCount = 0;
   hideFailingChannelBtn.hidden = true;
   clearPlaybackStatus();
+});
+
+resumePlayBtn.addEventListener('click', () => {
+  if (!activeChannel) return;
+  startChannelPlayback(activeChannel, true);
 });
 
 hideFailingChannelBtn.addEventListener('click', () => {
@@ -2775,12 +2811,15 @@ const initializeApp = async () => {
       if (resumeChannel && !new Set(settings.hiddenChannelIds).has(settings.lastChannelId)) {
         const canAttemptAutoplay = navigator.userActivation?.hasBeenActive ?? false;
         if (canAttemptAutoplay) {
+          pendingScrollToActiveChannel = true;
           startChannelPlayback(resumeChannel, true);
         } else {
           activeChannel = resumeChannel;
+          pendingScrollToActiveChannel = true;
           renderChannels();
           renderNowPlayingBar();
           refreshGuideDisplay();
+          updateResumePlayButton();
           setPlaybackStatus('Last channel selected. Press Play or click the channel to start streaming.', 'info');
         }
       }

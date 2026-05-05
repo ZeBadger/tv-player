@@ -1254,6 +1254,32 @@ html, body {
   display: none;
 }
 
+.resume-play-btn {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 6;
+  border: 1px solid rgba(132, 185, 230, 0.75);
+  background: rgba(10, 28, 43, 0.92);
+  color: #f2f9ff;
+  border-radius: 999px;
+  padding: 14px 26px;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+}
+
+.resume-play-btn:hover {
+  border-color: #9ec9f0;
+  background: rgba(16, 39, 57, 0.96);
+}
+
+.resume-play-btn[hidden] {
+  display: none;
+}
+
 .main.radio-mode .radio-card {
   display: flex;
   flex-direction: column;
