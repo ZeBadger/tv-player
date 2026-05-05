@@ -71,24 +71,19 @@ Tokens are reusable and stay valid until an admin revokes them. You can still cr
 
 Auth data is stored in `data/auth.json` (and persisted in Compose via `./data:/app/data`).
 
-### Admin Recovery Script
+### Admin Recovery
 
-If you get locked out of admin, run:
+If you get locked out of admin:
 
-```powershell
-pwsh ./scripts/recover-admin-token.ps1
+1. Delete `data/auth.json`.
+2. Restart the container.
+3. The app will bootstrap a fresh admin user and print a new initial admin token in container logs.
+
+To find the automatically created admin token, run:
+
+```bash
+docker logs tv-player-tv-player-1
 ```
-
-Then restart the app service and sign in with the printed URL.
-
-If you deliberately wipe `data/auth.json`, restarting the app will bootstrap a fresh admin user and print a new initial admin token in the server logs.
-
-Useful options:
-
-- `-Username admin` target a specific admin user
-- `-ExpiresInDays 7` set an optional token lifetime; omit it for a reusable token with no expiry
-- `-BaseUrl https://tv.example.com` print a public invite URL
-- `-AuthFile data/auth.json` override auth file path
 
 ### Admin API (for user/token management)
 
