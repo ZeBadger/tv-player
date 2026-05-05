@@ -16,13 +16,20 @@ export interface NowNextData {
   };
 }
 
+type ChannelListOptions = {
+  activeChannelUrl?: string;
+  favoriteChannelIds?: Set<string>;
+  onToggleFavorite?: (channel: Channel) => void;
+};
+
 export function renderChannelList(
   container: HTMLElement,
   channels: Channel[],
   onSelect: (channel: Channel) => void,
   nowNextData?: NowNextData,
-  activeChannelUrl?: string,
+  options: ChannelListOptions = {},
 ): void {
+  const activeChannelUrl = options.activeChannelUrl;
   container.innerHTML = '';
 
   if (channels.length === 0) {
@@ -56,6 +63,26 @@ export function renderChannelList(
     info.appendChild(number);
     info.appendChild(name);
 
+    const actions = document.createElement('div');
+    actions.className = 'channel-actions';
+
+    const channelKey = `${channel.GuideNumber}|${channel.GuideName}|${channel.URL}`;
+    const isFavorite = options.favoriteChannelIds?.has(channelKey) ?? false;
+
+    const favoriteBtn = document.createElement('button');
+    favoriteBtn.type = 'button';
+    favoriteBtn.className = `channel-action-btn ${isFavorite ? 'active' : ''}`;
+    favoriteBtn.textContent = isFavorite ? '★' : '☆';
+    favoriteBtn.title = isFavorite ? 'Remove favorite' : 'Add favorite';
+    favoriteBtn.setAttribute('aria-label', favoriteBtn.title);
+    favoriteBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      options.onToggleFavorite?.(channel);
+    });
+
+    actions.appendChild(favoriteBtn);
+    info.appendChild(actions);
+
     if (channel.HD) {
       const badge = document.createElement('span');
       badge.className = 'channel-hd';
@@ -87,7 +114,9 @@ export function renderChannelList(
           const nowText = document.createElement('span');
           nowText.className = 'guide-text';
           nowText.textContent = guideData.now.title;
-          nowText.setAttribute('data-fulltext', [guideData.now.title, guideData.now.desc].filter(Boolean).join('\n'));
+          const nowFullText = [guideData.now.title, guideData.now.desc].filter(Boolean).join('\n');
+          nowText.setAttribute('data-fulltext', nowFullText);
+          nowText.title = nowFullText;
 
           nowDiv.appendChild(nowLabel);
           nowDiv.appendChild(nowText);
@@ -104,7 +133,9 @@ export function renderChannelList(
           const nextText = document.createElement('span');
           nextText.className = 'guide-text';
           nextText.textContent = guideData.next.title;
-          nextText.setAttribute('data-fulltext', [guideData.next.title, guideData.next.desc].filter(Boolean).join('\n'));
+          const nextFullText = [guideData.next.title, guideData.next.desc].filter(Boolean).join('\n');
+          nextText.setAttribute('data-fulltext', nextFullText);
+          nextText.title = nextFullText;
 
           nextDiv.appendChild(nextLabel);
           nextDiv.appendChild(nextText);

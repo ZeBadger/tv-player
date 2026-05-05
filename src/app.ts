@@ -11,6 +11,11 @@ type AppSettings = {
   tvFilter: TvFilter;
   hiddenChannelIds: string[];
   showGuideSnippets: boolean;
+  favoriteChannelIds: string[];
+  channelSort: 'number' | 'name';
+  lastChannelId: string | null;
+  subtitlePreferencesByChannelId: Record<string, 'off' | 'native' | 'burn'>;
+  showPlaybackDetails: boolean;
 };
 
 type StreamInfo = {
@@ -74,6 +79,25 @@ type AdminTokenMeta = {
   status: 'active' | 'expired' | 'revoked';
 };
 
+type AdminUsageEvent = {
+  id: string;
+  at: string;
+  action: string;
+  actor: {
+    id: string | null;
+    username: string;
+    role: 'admin' | 'user' | 'anonymous';
+  };
+  targetUserId: string | null;
+  request: {
+    method: string;
+    path: string;
+    ip: string;
+    reqId: string | null;
+  };
+  details?: Record<string, unknown>;
+};
+
 const SETTINGS_KEY = 'tv-player-settings-v1';
 const EPG_LAST_SITE_KEY = 'epg-last-site-slug';
 const MAX_RETRIES = 3;
@@ -84,11 +108,63 @@ const ALIGNED_REFRESH_OFFSET_MS = 3000;
 
 const channelId = (channel: Channel): string => `${channel.GuideNumber}|${channel.GuideName}|${channel.URL}`;
 
+const channelNumberSortKey = (guideNumber: string): number[] => {
+  return String(guideNumber)
+    .split('.')
+    .map((part) => Number.parseInt(part, 10))
+    .map((value) => (Number.isFinite(value) ? value : 0));
+};
+
+const compareChannelNumbers = (a: Channel, b: Channel): number => {
+  const ak = channelNumberSortKey(a.GuideNumber);
+  const bk = channelNumberSortKey(b.GuideNumber);
+  const len = Math.max(ak.length, bk.length);
+  for (let i = 0; i < len; i += 1) {
+    const av = ak[i] ?? 0;
+    const bv = bk[i] ?? 0;
+    if (av !== bv) return av - bv;
+  }
+  return a.GuideName.localeCompare(b.GuideName);
+};
+
+const getSubtitlePreference = (channel: Channel): 'off' | 'native' | 'burn' => {
+  return settings.subtitlePreferencesByChannelId[channelId(channel)] ?? 'off';
+};
+
+const setSubtitlePreference = (channel: Channel, mode: 'off' | 'native' | 'burn') => {
+  settings.subtitlePreferencesByChannelId[channelId(channel)] = mode;
+  saveSettings(settings);
+};
+
+const restoreSettingsModalIfNeeded = () => {
+  if (reopenSettingsAfterSubModalClose) {
+    settingsModal.hidden = false;
+    reopenSettingsAfterSubModalClose = false;
+  }
+};
+
+const setFavoriteState = (channel: Channel, favorite: boolean) => {
+  const id = channelId(channel);
+  const set = new Set(settings.favoriteChannelIds);
+  if (favorite) {
+    set.add(id);
+  } else {
+    set.delete(id);
+  }
+  settings.favoriteChannelIds = [...set];
+  saveSettings(settings);
+};
+
 const defaultSettings: AppSettings = {
   mode: 'tv',
   tvFilter: 'both',
   hiddenChannelIds: [],
   showGuideSnippets: true,
+  favoriteChannelIds: [],
+  channelSort: 'number',
+  lastChannelId: null,
+  subtitlePreferencesByChannelId: {},
+  showPlaybackDetails: false,
 };
 
 const loadSettings = (): AppSettings => {
@@ -102,6 +178,11 @@ const loadSettings = (): AppSettings => {
     const tvFilter = (parsed as Record<string, unknown>).tvFilter;
     const hiddenChannelIds = (parsed as Record<string, unknown>).hiddenChannelIds;
     const showGuideSnippets = (parsed as Record<string, unknown>).showGuideSnippets;
+    const favoriteChannelIds = (parsed as Record<string, unknown>).favoriteChannelIds;
+    const channelSort = (parsed as Record<string, unknown>).channelSort;
+    const lastChannelId = (parsed as Record<string, unknown>).lastChannelId;
+    const subtitlePreferencesByChannelId = (parsed as Record<string, unknown>).subtitlePreferencesByChannelId;
+    const showPlaybackDetails = (parsed as Record<string, unknown>).showPlaybackDetails;
 
     return {
       mode: mode === 'radio' ? 'radio' : 'tv',
@@ -110,6 +191,17 @@ const loadSettings = (): AppSettings => {
         ? hiddenChannelIds.filter((v): v is string => typeof v === 'string')
         : [],
       showGuideSnippets: typeof showGuideSnippets === 'boolean' ? showGuideSnippets : true,
+      favoriteChannelIds: Array.isArray(favoriteChannelIds)
+        ? favoriteChannelIds.filter((v): v is string => typeof v === 'string')
+        : [],
+      channelSort: channelSort === 'name' ? 'name' : 'number',
+      lastChannelId: typeof lastChannelId === 'string' && lastChannelId ? lastChannelId : null,
+      subtitlePreferencesByChannelId: subtitlePreferencesByChannelId && typeof subtitlePreferencesByChannelId === 'object'
+        ? Object.fromEntries(
+            Object.entries(subtitlePreferencesByChannelId).filter(([, value]) => value === 'off' || value === 'native' || value === 'burn'),
+          ) as Record<string, 'off' | 'native' | 'burn'>
+        : {},
+      showPlaybackDetails: typeof showPlaybackDetails === 'boolean' ? showPlaybackDetails : false,
     };
   } catch {
     return defaultSettings;
@@ -162,6 +254,19 @@ app.innerHTML = `
             </div>
           </div>
           <div class="controls-row">
+            <div class="control-inline control-inline-wide">
+              <label for="channel-search">Search</label>
+              <input id="channel-search" type="text" placeholder="Find channel">
+            </div>
+            <div class="control-inline control-inline-sort">
+              <label for="channel-sort">Sort</label>
+              <select id="channel-sort">
+                <option value="number">Number</option>
+                <option value="name">Name</option>
+              </select>
+            </div>
+          </div>
+          <div class="controls-row">
             <button id="captions-toggle" class="hidden-settings-btn ctrl-btn" type="button" disabled>Subtitles: Off</button>
             <button id="guide-snippets-toggle" class="hidden-settings-btn ctrl-btn" type="button">Guide Detail: On</button>
           </div>
@@ -171,10 +276,7 @@ app.innerHTML = `
         <p class="channel-loading">Loading channels…</p>
       </div>
       <div class="sidebar-footer">
-        <button id="visibility-btn" class="hidden-settings-btn" type="button">Channel visibility</button>
-        <button id="epg-settings-btn" class="hidden-settings-btn" type="button">EPG settings</button>
-        <button id="admin-btn" class="hidden-settings-btn" type="button" hidden>Admin</button>
-        <button id="sign-out-btn" class="hidden-settings-btn" type="button" hidden>Sign out</button>
+        <button id="settings-btn" class="hidden-settings-btn" type="button">Settings</button>
       </div>
       <div class="app-credit">Created by <a href="https://github.com/ZeBadger" target="_blank" rel="noopener noreferrer">ZeBadger</a></div>
     </aside>
@@ -335,6 +437,13 @@ app.innerHTML = `
             <h3>Tokens</h3>
             <div id="admin-token-list" class="admin-list"></div>
           </div>
+          <div class="admin-section admin-usage-section">
+            <div class="admin-section-header">
+              <h3>Usage log</h3>
+              <button id="admin-refresh-usage-btn" type="button" class="admin-token-action">Refresh</button>
+            </div>
+            <div id="admin-usage-list" class="admin-list"></div>
+          </div>
           <div id="admin-status" class="admin-status" aria-live="polite"></div>
         </div>
       </div>
@@ -381,6 +490,40 @@ app.innerHTML = `
       </div>
     </div>
   </section>
+
+  <section id="settings-modal" class="settings-modal" hidden>
+    <div class="settings-dialog" role="dialog" aria-modal="true" aria-label="Application settings">
+      <div class="settings-header">
+        <h2>Settings</h2>
+        <button id="settings-close" type="button">Close</button>
+      </div>
+      <div class="settings-content">
+        <section id="settings-panel-channel" class="settings-panel">
+          <h3>Channel Settings</h3>
+          <p>Manage visibility and sidebar guide display.</p>
+          <div class="settings-actions">
+            <button id="visibility-btn" class="hidden-settings-btn" type="button">Channel visibility</button>
+          </div>
+        </section>
+        <section id="settings-panel-epg" class="settings-panel">
+          <h3>EPG Settings</h3>
+          <p>Configure guide source, status, and refresh actions.</p>
+          <div class="settings-actions">
+            <button id="epg-settings-btn" class="hidden-settings-btn" type="button">Open EPG settings</button>
+          </div>
+        </section>
+        <section id="settings-panel-user" class="settings-panel">
+          <h3>User Settings</h3>
+          <p id="settings-current-user" class="admin-muted"></p>
+          <div class="settings-actions">
+            <button id="more-info-toggle" class="hidden-settings-btn" type="button" hidden>More info: Off</button>
+            <button id="admin-btn" class="hidden-settings-btn" type="button" hidden>Admin</button>
+            <button id="sign-out-btn" class="hidden-settings-btn" type="button" hidden>Sign out</button>
+          </div>
+        </section>
+      </div>
+    </div>
+  </section>
 `;
 
 const videoEl = document.getElementById('video') as HTMLVideoElement;
@@ -395,7 +538,14 @@ const hideFailingChannelBtn = document.getElementById('hide-failing-channel-btn'
 const toastContainer = document.getElementById('toast-container')!;
 const modeFilterEl = document.getElementById('mode-filter') as HTMLSelectElement;
 const tvFilterEl = document.getElementById('tv-filter') as HTMLSelectElement;
+const channelSearchEl = document.getElementById('channel-search') as HTMLInputElement;
+const channelSortEl = document.getElementById('channel-sort') as HTMLSelectElement;
 const tvFilterRowEl = document.getElementById('tv-filter-row')!;
+const settingsBtn = document.getElementById('settings-btn') as HTMLButtonElement;
+const settingsModal = document.getElementById('settings-modal')!;
+const settingsCloseBtn = document.getElementById('settings-close') as HTMLButtonElement;
+const settingsCurrentUserEl = document.getElementById('settings-current-user')!;
+const moreInfoToggleBtn = document.getElementById('more-info-toggle') as HTMLButtonElement;
 const visibilityBtn = document.getElementById('visibility-btn') as HTMLButtonElement;
 const visibilityModal = document.getElementById('visibility-modal')!;
 const visibilityClose = document.getElementById('visibility-close') as HTMLButtonElement;
@@ -434,6 +584,8 @@ const adminTokenValueEl = document.getElementById('admin-token-value') as HTMLTe
 const adminCopyInviteBtn = document.getElementById('admin-copy-invite-btn') as HTMLButtonElement;
 const adminCopyTokenBtn = document.getElementById('admin-copy-token-btn') as HTMLButtonElement;
 const adminTokenListEl = document.getElementById('admin-token-list')!;
+const adminUsageListEl = document.getElementById('admin-usage-list')!;
+const adminRefreshUsageBtn = document.getElementById('admin-refresh-usage-btn') as HTMLButtonElement;
 const adminStatusEl = document.getElementById('admin-status')!;
 const captionsToggleBtn = document.getElementById('captions-toggle') as HTMLButtonElement;
 const guideSnippetsToggleBtn = document.getElementById('guide-snippets-toggle') as HTMLButtonElement;
@@ -458,6 +610,7 @@ const epgPickerInfo = document.getElementById('epg-picker-info')!;
 
 let allChannels: Channel[] = [];
 let settings = loadSettings();
+let channelSearchQuery = '';
 let visibilityMode: Mode = settings.mode;
 let visibilityTvFilter: TvFilter = settings.tvFilter;
 let activeChannel: Channel | null = null;
@@ -482,8 +635,10 @@ let currentSidecarSourceUrl = 'http://iptv-epg:3000/guide.xml';
 let currentAuthUser: AuthUser | null = null;
 let adminUsers: AdminUser[] = [];
 let adminTokens: AdminTokenMeta[] = [];
+let adminUsageEvents: AdminUsageEvent[] = [];
 let selectedAdminUserId: string | null = null;
 let appInitialized = false;
+let reopenSettingsAfterSubModalClose = false;
 
 initPlayer(videoEl);
 videoEl.setAttribute('controlsList', 'nodownload noplaybackrate');
@@ -520,6 +675,7 @@ const hideAdminTokenOutput = () => {
 
 const updateAdminActionState = () => {
   const isAdmin = currentAuthUser?.role === 'admin';
+  moreInfoToggleBtn.hidden = !isAdmin;
   adminBtn.hidden = !isAdmin;
   adminGenerateTokenBtn.disabled = !isAdmin || !selectedAdminUserId;
   adminDisableUserBtn.disabled = !isAdmin || !selectedAdminUserId;
@@ -538,8 +694,10 @@ const applyAuthUserUi = (user: AuthUser | null) => {
   if (user) {
     const roleLabel = user.role === 'admin' ? 'Admin' : 'User';
     currentUserEl.textContent = `${user.username} (${roleLabel})`;
+    settingsCurrentUserEl.textContent = `Signed in as ${user.username} (${roleLabel})`;
   } else {
     currentUserEl.textContent = '';
+    settingsCurrentUserEl.textContent = 'Not signed in';
   }
   signOutBtn.hidden = !user;
   updateAdminActionState();
@@ -871,6 +1029,61 @@ const renderAdminTokens = () => {
   adminTokenListEl.appendChild(list);
 };
 
+const renderAdminUsage = () => {
+  adminUsageListEl.innerHTML = '';
+  if (adminUsageEvents.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'admin-empty';
+    empty.textContent = 'No usage events yet.';
+    adminUsageListEl.appendChild(empty);
+    return;
+  }
+
+  const list = document.createElement('div');
+  list.className = 'admin-items';
+
+  for (const event of adminUsageEvents) {
+    const item = document.createElement('div');
+    item.className = 'admin-token-card';
+
+    const titleRow = document.createElement('div');
+    titleRow.className = 'admin-token-row';
+
+    const title = document.createElement('div');
+    title.className = 'admin-token-title';
+    title.textContent = `${event.actor.username} • ${event.action}`;
+
+    const stamp = document.createElement('span');
+    stamp.className = 'admin-token-status active';
+    stamp.textContent = formatDateTime(event.at);
+
+    titleRow.appendChild(title);
+    titleRow.appendChild(stamp);
+    item.appendChild(titleRow);
+
+    const meta = document.createElement('div');
+    meta.className = 'admin-token-meta';
+    meta.textContent = `${event.request.method} ${event.request.path} • ${event.request.ip}`;
+    item.appendChild(meta);
+
+    list.appendChild(item);
+  }
+
+  adminUsageListEl.appendChild(list);
+};
+
+const refreshAdminUsage = async (keepStatus = false) => {
+  if (!keepStatus) {
+    setAdminStatus('Loading usage log...');
+  }
+  const payload = await adminApiJson<{ events: AdminUsageEvent[] }>('/auth/admin/usage?limit=100');
+  adminUsageEvents = payload.events;
+  renderAdminUsage();
+  if (!keepStatus) {
+    setAdminStatus('');
+  }
+};
+
 const refreshAdminTokensForSelection = async () => {
   if (!selectedAdminUserId) {
     adminTokens = [];
@@ -906,6 +1119,7 @@ const refreshAdminData = async (keepStatus = false) => {
     hideAdminTokenOutput();
   }
   await refreshAdminTokensForSelection();
+  await refreshAdminUsage(true);
 };
 
 const copyAdminFieldValue = async (field: HTMLTextAreaElement, successMessage: string) => {
@@ -1110,7 +1324,9 @@ const setModeUi = () => {
 const syncControlValues = () => {
   modeFilterEl.value = settings.mode;
   tvFilterEl.value = settings.tvFilter;
+  channelSortEl.value = settings.channelSort;
   guideSnippetsToggleBtn.textContent = `Guide Detail: ${settings.showGuideSnippets ? 'On' : 'Off'}`;
+  moreInfoToggleBtn.textContent = `More info: ${settings.showPlaybackDetails ? 'On' : 'Off'}`;
 };
 
 const setVisibilityFilterUi = () => {
@@ -1189,6 +1405,27 @@ const formatStreamInfoSummary = (info: StreamInfo | null, loading: boolean): str
   return `${video} | ${audio} | ${subtitles}`;
 };
 
+const isAutoplayBlockedMessage = (message: string): boolean => {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('didn\'t interact') ||
+    normalized.includes('user did not interact') ||
+    normalized.includes('notallowederror') ||
+    normalized.includes('autoplay')
+  );
+};
+
+const getPlaybackModeLabel = (channel: Channel): string => {
+  const url = streamUrl(channel, {
+    forceTranscode: burnInCaptionsEnabled && !isRadio(channel),
+    captionsMode: burnInCaptionsEnabled ? 'burn' : 'none',
+  });
+
+  if (url.startsWith('/hdhomerun-transcode/')) return 'Transcode';
+  if (url.startsWith('/hdhomerun-radio/')) return 'Radio passthrough';
+  return 'TV passthrough';
+};
+
 const fetchStreamInfo = async (showLoading: boolean = false) => {
   if (!activeChannel) {
     currentStreamInfo = null;
@@ -1265,18 +1502,34 @@ const renderNowPlayingBar = () => {
     nowPlaying.appendChild(inlineGuide);
   }
 
+  const badges = document.createElement('div');
+  badges.className = 'now-playing-badges';
+
   if (burnInCaptionsEnabled && !isRadio(activeChannel)) {
     const ccBadge = document.createElement('span');
     ccBadge.className = 'cc-badge';
     ccBadge.textContent = 'CC';
-    nowPlaying.appendChild(ccBadge);
+    badges.appendChild(ccBadge);
   }
 
-  const streamInfo = document.createElement('span');
-  streamInfo.className = 'stream-info';
-  streamInfo.textContent = formatStreamInfoSummary(currentStreamInfo, streamInfoLoading);
-  streamInfo.title = streamInfo.textContent;
-  nowPlaying.appendChild(streamInfo);
+  if (settings.showPlaybackDetails) {
+    const modeBadge = document.createElement('span');
+    modeBadge.className = 'stream-mode-badge';
+    modeBadge.textContent = getPlaybackModeLabel(activeChannel);
+    badges.appendChild(modeBadge);
+  }
+
+  if (badges.childElementCount > 0) {
+    nowPlaying.appendChild(badges);
+  }
+
+  if (settings.showPlaybackDetails) {
+    const streamInfo = document.createElement('span');
+    streamInfo.className = 'stream-info';
+    streamInfo.textContent = formatStreamInfoSummary(currentStreamInfo, streamInfoLoading);
+    streamInfo.title = streamInfo.textContent;
+    nowPlaying.appendChild(streamInfo);
+  }
 };
 
 const startChannelPlayback = (channel: Channel, resetFailures: boolean) => {
@@ -1289,7 +1542,13 @@ const startChannelPlayback = (channel: Channel, resetFailures: boolean) => {
     activeChannelFailureCount = 0;
   }
 
+  const subtitlePreference = getSubtitlePreference(channel);
+  burnInCaptionsEnabled = subtitlePreference === 'burn' && !isRadio(channel);
+  captionsEnabled = subtitlePreference === 'native';
+
   activeChannel = channel;
+  settings.lastChannelId = channelId(channel);
+  saveSettings(settings);
   currentStreamInfo = null;
   streamInfoLoading = false;
   streamInfoRequestToken += 1;
@@ -1320,6 +1579,11 @@ const startChannelPlayback = (channel: Channel, resetFailures: boolean) => {
       if (sessionId !== playSessionId) return;
       if (!activeChannel || channelId(activeChannel) !== channelId(channel)) return;
 
+       if (isAutoplayBlockedMessage(message)) {
+        setPlaybackStatus('Playback is blocked by browser autoplay policy. Click the video controls or reselect the channel to start.', 'info');
+        return;
+      }
+
       activeChannelFailureCount += 1;
 
       if (activeChannelFailureCount <= MAX_RETRIES) {
@@ -1338,7 +1602,9 @@ const startChannelPlayback = (channel: Channel, resetFailures: boolean) => {
 
 const filteredChannels = (): Channel[] => {
   const hiddenSet = new Set(settings.hiddenChannelIds);
-  return allChannels.filter((channel) => {
+  const favoriteSet = new Set(settings.favoriteChannelIds);
+
+  const filtered = allChannels.filter((channel) => {
     if (hiddenSet.has(channelId(channel))) return false;
 
     if (settings.mode === 'radio') {
@@ -1350,6 +1616,32 @@ const filteredChannels = (): Channel[] => {
     if (settings.tvFilter === 'hd') return Boolean(channel.HD);
     return !channel.HD;
   });
+
+  const query = channelSearchQuery.trim().toLowerCase();
+  const searched = query
+    ? filtered.filter((channel) =>
+        channel.GuideName.toLowerCase().includes(query) ||
+        channel.GuideNumber.toLowerCase().includes(query),
+      )
+    : filtered;
+
+  searched.sort((a, b) => {
+    const aId = channelId(a);
+    const bId = channelId(b);
+    const aFav = favoriteSet.has(aId) ? 1 : 0;
+    const bFav = favoriteSet.has(bId) ? 1 : 0;
+    if (aFav !== bFav) return bFav - aFav;
+
+    if (settings.channelSort === 'name') {
+      const byName = a.GuideName.localeCompare(b.GuideName);
+      if (byName !== 0) return byName;
+      return compareChannelNumbers(a, b);
+    }
+
+    return compareChannelNumbers(a, b);
+  });
+
+  return searched;
 };
 
 const visibilityFilterMatches = (channel: Channel): boolean => {
@@ -1595,13 +1887,22 @@ const renderChannels = () => {
   visibilityBtn.textContent = `Channel visibility (${hiddenInView} hidden)`;
   renderChannelList(channelContainer, channels, (channel) => {
     startChannelPlayback(channel, true);
-  }, currentNowNextData as Record<string, Record<string, unknown>>, activeChannel?.URL);
+  }, currentNowNextData as Record<string, Record<string, unknown>>, {
+    activeChannelUrl: activeChannel?.URL,
+    favoriteChannelIds: new Set(settings.favoriteChannelIds),
+    onToggleFavorite: (channel) => {
+      const id = channelId(channel);
+      setFavoriteState(channel, !new Set(settings.favoriteChannelIds).has(id));
+      renderChannels();
+    },
+  });
 };
 
 syncControlValues();
 setModeUi();
 syncVisibilityControlValues();
 setVisibilityFilterUi();
+channelSearchEl.value = '';
 
 const updateMode = (value: string) => {
   settings.mode = value === 'radio' ? 'radio' : 'tv';
@@ -1633,6 +1934,17 @@ tvFilterEl.addEventListener('change', () => {
   updateTvFilter(tvFilterEl.value);
 });
 
+channelSearchEl.addEventListener('input', () => {
+  channelSearchQuery = channelSearchEl.value;
+  renderChannels();
+});
+
+channelSortEl.addEventListener('change', () => {
+  settings.channelSort = channelSortEl.value === 'name' ? 'name' : 'number';
+  saveSettings(settings);
+  renderChannels();
+});
+
 modalTvFilterEl.addEventListener('change', () => {
   const value = modalTvFilterEl.value;
   visibilityTvFilter = value === 'sd' || value === 'hd' || value === 'both' ? value : 'both';
@@ -1641,19 +1953,38 @@ modalTvFilterEl.addEventListener('change', () => {
 });
 
 visibilityBtn.addEventListener('click', () => {
+  reopenSettingsAfterSubModalClose = !settingsModal.hidden;
+  settingsModal.hidden = true;
   syncVisibilityControlValues();
   setVisibilityFilterUi();
   visibilityModal.hidden = false;
   renderVisibilityModal();
 });
 
+settingsBtn.addEventListener('click', () => {
+  reopenSettingsAfterSubModalClose = false;
+  settingsModal.hidden = false;
+});
+
+settingsCloseBtn.addEventListener('click', () => {
+  settingsModal.hidden = true;
+});
+
+settingsModal.addEventListener('click', (event) => {
+  if (event.target === settingsModal) {
+    settingsModal.hidden = true;
+  }
+});
+
 visibilityClose.addEventListener('click', () => {
   visibilityModal.hidden = true;
+  restoreSettingsModalIfNeeded();
 });
 
 visibilityModal.addEventListener('click', (event) => {
   if (event.target === visibilityModal) {
     visibilityModal.hidden = true;
+    restoreSettingsModalIfNeeded();
   }
 });
 
@@ -1686,6 +2017,9 @@ captionsToggleBtn.addEventListener('click', () => {
 
   if (burnInCaptionsEnabled) {
     burnInCaptionsEnabled = false;
+    if (activeChannel) {
+      setSubtitlePreference(activeChannel, 'off');
+    }
     setPlaybackStatus('Burn-in captions disabled.', 'info');
     if (activeChannel) startChannelPlayback(activeChannel, true);
     refreshCaptionsUi();
@@ -1695,6 +2029,7 @@ captionsToggleBtn.addEventListener('click', () => {
   if (getCaptionTracks().length === 0) {
     if (activeChannel && !isRadio(activeChannel)) {
       burnInCaptionsEnabled = true;
+      setSubtitlePreference(activeChannel, 'burn');
       setPlaybackStatus('Using burn-in captions (experimental).', 'info');
       startChannelPlayback(activeChannel, true);
       return;
@@ -1704,6 +2039,9 @@ captionsToggleBtn.addEventListener('click', () => {
     return;
   }
   captionsEnabled = !captionsEnabled;
+  if (activeChannel) {
+    setSubtitlePreference(activeChannel, captionsEnabled ? 'native' : 'off');
+  }
   applyCaptionMode();
   refreshCaptionsUi();
 });
@@ -1713,6 +2051,13 @@ guideSnippetsToggleBtn.addEventListener('click', () => {
   saveSettings(settings);
   syncControlValues();
   refreshGuideDisplay();
+});
+
+moreInfoToggleBtn.addEventListener('click', () => {
+  settings.showPlaybackDetails = !settings.showPlaybackDetails;
+  saveSettings(settings);
+  syncControlValues();
+  renderNowPlayingBar();
 });
 
 videoEl.addEventListener('loadedmetadata', () => {
@@ -2155,6 +2500,8 @@ const refreshEpg = async () => {
 };
 
 epgSettingsBtn.addEventListener('click', () => {
+  reopenSettingsAfterSubModalClose = !settingsModal.hidden;
+  settingsModal.hidden = true;
   epgSettingsModal.hidden = false;
   void fetchEpgStatus();
   if (iptvOrgSites.length === 0) {
@@ -2168,12 +2515,14 @@ epgSettingsBtn.addEventListener('click', () => {
 epgSettingsClose.addEventListener('click', () => {
   epgSettingsModal.hidden = true;
   stopEpgStatusPolling();
+  restoreSettingsModalIfNeeded();
 });
 
 epgSettingsModal.addEventListener('click', (event) => {
   if (event.target === epgSettingsModal) {
     epgSettingsModal.hidden = true;
     stopEpgStatusPolling();
+    restoreSettingsModalIfNeeded();
   }
 });
 
@@ -2204,6 +2553,8 @@ epgApplySiteFileBtn.addEventListener('click', applySelectedIptvOrgFile);
 
 adminBtn.addEventListener('click', () => {
   if (currentAuthUser?.role !== 'admin') return;
+  reopenSettingsAfterSubModalClose = !settingsModal.hidden;
+  settingsModal.hidden = true;
   adminModal.hidden = false;
   void refreshAdminData().catch((err) => {
     setAdminStatus(err instanceof Error ? err.message : 'Failed to load access data', true);
@@ -2212,11 +2563,13 @@ adminBtn.addEventListener('click', () => {
 
 adminCloseBtn.addEventListener('click', () => {
   adminModal.hidden = true;
+  restoreSettingsModalIfNeeded();
 });
 
 adminModal.addEventListener('click', (event) => {
   if (event.target === adminModal) {
     adminModal.hidden = true;
+    restoreSettingsModalIfNeeded();
   }
 });
 
@@ -2323,6 +2676,12 @@ adminCopyTokenBtn.addEventListener('click', () => {
   void copyAdminFieldValue(adminTokenValueEl, 'Token copied.');
 });
 
+adminRefreshUsageBtn.addEventListener('click', () => {
+  void refreshAdminUsage().catch((err) => {
+    setAdminStatus(err instanceof Error ? err.message : 'Failed to load usage log', true);
+  });
+});
+
 authTokenSubmitBtn.addEventListener('click', () => {
   void (async () => {
     const token = authTokenInputEl.value.trim();
@@ -2360,6 +2719,7 @@ authTokenInputEl.addEventListener('keydown', (event) => {
 
 signOutBtn.addEventListener('click', () => {
   void (async () => {
+    settingsModal.hidden = true;
     signOutBtn.disabled = true;
     try {
       await fetch('/auth/logout', { method: 'POST' });
@@ -2410,6 +2770,21 @@ const initializeApp = async () => {
     renderVisibilityModal();
     renderChannels();
     await refreshNowNextAndUi();
+    if (!activeChannel && settings.lastChannelId) {
+      const resumeChannel = allChannels.find((channel) => channelId(channel) === settings.lastChannelId);
+      if (resumeChannel && !new Set(settings.hiddenChannelIds).has(settings.lastChannelId)) {
+        const canAttemptAutoplay = navigator.userActivation?.hasBeenActive ?? false;
+        if (canAttemptAutoplay) {
+          startChannelPlayback(resumeChannel, true);
+        } else {
+          activeChannel = resumeChannel;
+          renderChannels();
+          renderNowPlayingBar();
+          refreshGuideDisplay();
+          setPlaybackStatus('Last channel selected. Press Play or click the channel to start streaming.', 'info');
+        }
+      }
+    }
     // Refresh guide data at aligned 5-minute boundaries.
     scheduleAlignedNowNextRefresh();
   } catch (err: unknown) {

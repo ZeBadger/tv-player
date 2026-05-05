@@ -183,6 +183,31 @@ html, body {
   font-size: 11px;
 }
 
+.control-inline input {
+  flex: 1;
+  min-width: 0;
+  background: #111;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
+.control-inline input:focus,
+.control-inline select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.control-inline-wide {
+  flex: 2;
+}
+
+.control-inline-sort {
+  flex: 1;
+}
+
 .ctrl-btn {
   flex: 1;
   min-width: 0;
@@ -249,6 +274,10 @@ html, body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+#settings-btn {
+  width: 100%;
 }
 
 .app-credit {
@@ -1076,8 +1105,27 @@ html, body {
   gap: 8px;
 }
 
-.stream-info {
+.now-playing-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   margin-left: auto;
+}
+
+.stream-mode-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid rgba(132, 185, 230, 0.45);
+  color: #9ec9f0;
+  background: rgba(19, 35, 50, 0.7);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.stream-info {
+  margin-left: 0;
   min-width: 0;
   max-width: 52%;
   font-size: 11px;
@@ -1376,13 +1424,43 @@ html, body {
   width: 100%;
 }
 
+.channel-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.channel-action-btn {
+  background: #101010;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 10px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.channel-action-btn.active {
+  color: #fff;
+  border-color: rgba(132, 185, 230, 0.55);
+}
+
+.channel-item.active .channel-action-btn {
+  border-color: rgba(255, 255, 255, 0.45);
+  background: rgba(0, 0, 0, 0.25);
+  color: rgba(255, 255, 255, 0.95);
+}
+
 .channel-guide {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   margin-top: 4px;
-  padding-top: 8px;
+  padding-top: 9px;
+  padding-left: 8px;
   border-top: 1px solid rgba(224, 224, 224, 0.1);
+  border-left: 2px solid rgba(224, 224, 224, 0.12);
   overflow: visible;
 }
 
@@ -1410,6 +1488,7 @@ html, body {
 }
 
 .channel-item.active .channel-guide {
+  border-left-color: rgba(255, 255, 255, 0.35);
   border-top-color: rgba(255, 255, 255, 0.24);
 }
 
@@ -1456,6 +1535,86 @@ html, body {
   line-height: 1.35;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   pointer-events: none;
+}
+
+.settings-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 22;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.settings-modal[hidden] {
+  display: none;
+}
+
+.settings-dialog {
+  width: min(640px, 100%);
+  max-height: min(80vh, 620px);
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.settings-header h2 {
+  font-size: 15px;
+}
+
+.settings-header button {
+  background: #111;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.settings-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-panel {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-panel h3 {
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.settings-panel p {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 /* Guide panel in main view */

@@ -9,9 +9,13 @@ Created by [ZeBadger](https://github.com/ZeBadger).
 **Features**
 
 - Live TV and radio playback in the browser
-- Channel list with HD/SD/Radio filtering
+- Channel list with HD/SD/Radio filtering, favourites, search, and sorting
 - EPG now/next programme snippets in the channel list
 - Channel visibility management (hide channels you don't want)
+- Last-channel restore on reload (browser autoplay policy permitting)
+- Unified Settings modal for channel, EPG, and user actions
+- Admin-only access management with user/token controls and usage log
+- Optional admin-only "More info" toggle for playback internals (transcode/passthrough details)
 - DVB subtitle burn-in for supported channels
 
 ## Requirements

@@ -964,6 +964,8 @@ const loadAuthStore = () => {
 };
 
 let authStore = loadAuthStore();
+const authUsageLog = [];
+const authUsageLogMaxEntries = Math.max(100, Number(process.env.AUTH_USAGE_LOG_MAX_ENTRIES ?? 500));
 
 const saveAuthStore = () => {
   mkdirSync(authDataDir, { recursive: true });
@@ -1432,6 +1434,35 @@ const getRequestOrigin = (req) => {
   return `${proto}://${host}`;
 };
 
+const getRequestIp = (req) => {
+  const forwarded = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim();
+  if (forwarded) return forwarded;
+  return req.socket?.remoteAddress ?? 'unknown';
+};
+
+const recordAuthUsage = (req, reqId, action, actor, details = {}, targetUserId = null) => {
+  authUsageLog.push({
+    id: createId('evt'),
+    at: nowIso(),
+    action,
+    actor: actor
+      ? { id: actor.id, username: actor.username, role: actor.role }
+      : { id: null, username: 'anonymous', role: 'anonymous' },
+    targetUserId,
+    request: {
+      method: req.method ?? 'GET',
+      path: new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`).pathname,
+      ip: getRequestIp(req),
+      reqId,
+    },
+    details,
+  });
+
+  if (authUsageLog.length > authUsageLogMaxEntries) {
+    authUsageLog.splice(0, authUsageLog.length - authUsageLogMaxEntries);
+  }
+};
+
 const isProtectedPath = (path) => (
   path.startsWith('/hdhomerun/') ||
   path.startsWith('/hdhomerun-stream/') ||
@@ -1493,6 +1524,7 @@ createServer(async (req, res) => {
         const rememberDevice = payload.rememberDevice !== false;
 
         if (!rawToken) {
+          recordAuthUsage(req, reqId, 'auth.exchange_token_missing', null);
           respond(res, 400, JSON.stringify({ error: 'Token is required' }), 'application/json; charset=utf-8');
           return;
         }
@@ -1503,12 +1535,14 @@ createServer(async (req, res) => {
           isTokenActive(token));
 
         if (!tokenRecord) {
+          recordAuthUsage(req, reqId, 'auth.exchange_token_invalid', null);
           respond(res, 401, JSON.stringify({ error: 'Token is invalid or expired' }), 'application/json; charset=utf-8');
           return;
         }
 
         const user = authStore.users.find((item) => item.id === tokenRecord.userId && !item.disabledAt);
         if (!user) {
+          recordAuthUsage(req, reqId, 'auth.exchange_token_user_inactive', null, {}, tokenRecord.userId ?? null);
           respond(res, 401, JSON.stringify({ error: 'Token user is no longer active' }), 'application/json; charset=utf-8');
           return;
         }
@@ -1517,6 +1551,7 @@ createServer(async (req, res) => {
         const session = createSession(user.id, rememberDevice);
         setSessionCookie(req, res, session.id, rememberDevice);
         saveAuthStore();
+        recordAuthUsage(req, reqId, 'auth.login_success', user, { rememberDevice }, user.id);
 
         respond(
           res,
@@ -1533,10 +1568,12 @@ createServer(async (req, res) => {
     if (method === 'POST' && path === '/auth/logout') {
       const cookies = parseCookies(req.headers.cookie);
       const sessionId = cookies[authSessionCookieName];
+      const authContext = findAuthContext(req);
       if (sessionId) {
         authStore.sessions = authStore.sessions.filter((session) => session.id !== sessionId);
         saveAuthStore();
       }
+      recordAuthUsage(req, reqId, 'auth.logout', authContext?.user ?? null);
       clearSessionCookie(req, res);
       respond(res, 200, JSON.stringify({ ok: true }), 'application/json; charset=utf-8');
       return;
@@ -1566,6 +1603,16 @@ createServer(async (req, res) => {
           }));
 
         respond(res, 200, JSON.stringify({ users }), 'application/json; charset=utf-8');
+        return;
+      }
+
+      if (method === 'GET' && path === '/auth/admin/usage') {
+        const requestedLimit = Number(reqUrl.searchParams.get('limit') ?? 100);
+        const limit = Number.isFinite(requestedLimit)
+          ? Math.min(500, Math.max(1, Math.floor(requestedLimit)))
+          : 100;
+        const events = authUsageLog.slice(-limit).reverse();
+        respond(res, 200, JSON.stringify({ events }), 'application/json; charset=utf-8');
         return;
       }
 
@@ -1627,6 +1674,7 @@ createServer(async (req, res) => {
           };
           authStore.users.push(user);
           saveAuthStore();
+          recordAuthUsage(req, reqId, 'admin.user_created', authContext.user, { role }, user.id);
 
           respond(res, 200, JSON.stringify({ ok: true, user: publicUser(user) }), 'application/json; charset=utf-8');
         } catch {
@@ -1665,6 +1713,7 @@ createServer(async (req, res) => {
           clearUserSessions(user.id);
           revokeUserTokens(user.id);
           saveAuthStore();
+          recordAuthUsage(req, reqId, 'admin.user_disabled', authContext.user, {}, user.id);
 
           respond(res, 200, JSON.stringify({ ok: true }), 'application/json; charset=utf-8');
         } catch {
@@ -1698,6 +1747,7 @@ createServer(async (req, res) => {
           clearUserSessions(user.id);
           authStore.tokens = authStore.tokens.filter((token) => token.userId !== user.id);
           saveAuthStore();
+          recordAuthUsage(req, reqId, 'admin.user_deleted', authContext.user, {}, user.id);
 
           respond(res, 200, JSON.stringify({ ok: true }), 'application/json; charset=utf-8');
         } catch {
@@ -1724,6 +1774,7 @@ createServer(async (req, res) => {
 
           user.disabledAt = null;
           saveAuthStore();
+          recordAuthUsage(req, reqId, 'admin.user_restored', authContext.user, {}, user.id);
           respond(res, 200, JSON.stringify({ ok: true }), 'application/json; charset=utf-8');
         } catch {
           respond(res, 400, JSON.stringify({ error: 'Invalid request body' }), 'application/json; charset=utf-8');
@@ -1749,6 +1800,10 @@ createServer(async (req, res) => {
 
           const { record, plainToken } = createAuthTokenRecord(user.id, authContext.user.id, ttlHours, label);
           saveAuthStore();
+          recordAuthUsage(req, reqId, 'admin.token_created', authContext.user, {
+            label: record.label,
+            expiresAt: record.expiresAt,
+          }, user.id);
 
           const inviteUrl = `${getRequestOrigin(req)}/?token=${encodeURIComponent(plainToken)}`;
           respond(
@@ -1787,6 +1842,7 @@ createServer(async (req, res) => {
 
           tokenRecord.revokedAt = nowIso();
           saveAuthStore();
+          recordAuthUsage(req, reqId, 'admin.token_revoked', authContext.user, {}, tokenRecord.userId ?? null);
           respond(res, 200, JSON.stringify({ ok: true }), 'application/json; charset=utf-8');
         } catch {
           respond(res, 400, JSON.stringify({ error: 'Invalid request body' }), 'application/json; charset=utf-8');
