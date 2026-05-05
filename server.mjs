@@ -5,6 +5,16 @@ import { createReadStream, existsSync, statSync, mkdirSync, writeFileSync, readF
 import { dirname, extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// Prefix every log line with an ISO-8601 timestamp so logs are useful
+// whether viewed via `docker logs`, `npm start`, or a log aggregator.
+{
+  const ts = () => new Date().toISOString();
+  const wrap = (fn) => (...args) => fn(ts(), ...args);
+  console.log = wrap(console.log.bind(console));
+  console.warn = wrap(console.warn.bind(console));
+  console.error = wrap(console.error.bind(console));
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const distDir = join(__dirname, 'dist');
@@ -1432,6 +1442,7 @@ const isProtectedPath = (path) => (
 );
 
 createServer(async (req, res) => {
+  const reqId = randomBytes(3).toString('hex');
   try {
     const method = req.method ?? 'GET';
     const reqUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -1439,6 +1450,24 @@ createServer(async (req, res) => {
 
     if (method !== 'GET' && method !== 'HEAD' && method !== 'POST') {
       respond(res, 405, 'Method Not Allowed');
+      return;
+    }
+
+    if (method === 'GET' && path === '/health') {
+      const health = { ok: true, timestamp: new Date().toISOString(), hdhomerun: 'unknown' };
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3000);
+        const hdhrRes = await fetch(`${apiBase}/discover.json`, { signal: controller.signal });
+        clearTimeout(timeout);
+        health.hdhomerun = hdhrRes.ok ? 'ok' : `http_${hdhrRes.status}`;
+        health.ok = hdhrRes.ok;
+      } catch (err) {
+        health.ok = false;
+        health.hdhomerun = 'unreachable';
+        health.error = err instanceof Error ? err.message : String(err);
+      }
+      respond(res, health.ok ? 200 : 503, JSON.stringify(health), 'application/json; charset=utf-8');
       return;
     }
 
@@ -1900,16 +1929,26 @@ createServer(async (req, res) => {
 
       const now = new Date();
       const byEpgChannelId = {};
+      // Track the earliest upcoming programme per channel to find "next"
+      // regardless of how far away it starts (fixes missing "next" across
+      // midnight and after long gaps in the schedule).
+      const nextCandidates = {};
       for (const prog of epgData.programmes) {
         const progStart = parseXmltvDate(prog.start);
         const progStop = parseXmltvDate(prog.stop);
         if (!progStart || !progStop) continue;
         if (progStart <= now && now < progStop) {
           byEpgChannelId[prog.channel] = { now: prog };
-        } else if (progStart > now && progStart.getTime() - now.getTime() < 3600000) {
-          if (!byEpgChannelId[prog.channel]) byEpgChannelId[prog.channel] = {};
-          byEpgChannelId[prog.channel].next = prog;
+        } else if (progStart > now) {
+          const existing = nextCandidates[prog.channel];
+          if (!existing || progStart < existing.start) {
+            nextCandidates[prog.channel] = { prog, start: progStart };
+          }
         }
+      }
+      for (const [chanId, { prog }] of Object.entries(nextCandidates)) {
+        if (!byEpgChannelId[chanId]) byEpgChannelId[chanId] = {};
+        byEpgChannelId[chanId].next = prog;
       }
 
       for (const [epgId, payload] of Object.entries(byEpgChannelId)) {
@@ -2037,7 +2076,7 @@ createServer(async (req, res) => {
 
     serveStatic(req, res);
   } catch (err) {
-    console.error(err);
+    console.error(`[${reqId}] unhandled error:`, err);
     if (!res.headersSent) {
       respond(res, 500, 'Internal Server Error');
     } else {

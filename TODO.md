@@ -13,20 +13,20 @@ Priority labels:
 
 ## Sprint 1 (P0)
 
-- [ ] Add unit tests for stream selection rules in src/hdhomerun.ts.
-- [ ] Add unit tests for player setup and teardown behavior in src/player.ts.
-- [ ] Add integration test for channel switching cleanup behavior in server.mjs.
-- [ ] Add server request correlation id and structured log fields.
-- [ ] Ensure Docker-visible logs include timestamps where possible.
-- [ ] Fix issue where the "Next" TV show is not displayed when the current "Now" show is the last programme before midnight.
-- [ ] Work out why the selected channel highlight is lost and fix the issue so the active channel stays highlighted.
-- [ ] Add /health endpoint that validates HDHomeRun reachability.
-- [ ] Improve frontend playback error messages with actionable recovery hints.
+- [x] Add unit tests for stream selection rules in src/hdhomerun.ts.
+- [x] Add unit tests for player setup and teardown behavior in src/player.ts.
+- [x] Add integration test for channel switching cleanup behavior in server.mjs.
+- [x] Add server request correlation id and structured log fields.
+- [x] Ensure Docker-visible logs include timestamps where possible.
+- [x] Fix issue where the "Next" TV show is not displayed when the current "Now" show is the last programme before midnight.
+- [x] Work out why the selected channel highlight is lost and fix the issue so the active channel stays highlighted.
+- [x] Add /health endpoint that validates HDHomeRun reachability.
+- [x] Improve frontend playback error messages with actionable recovery hints.
 
 Definition of done:
 
-- [ ] npm test runs meaningful test coverage for the critical playback path.
-- [ ] npm run build passes.
+- [x] npm test runs meaningful test coverage for the critical playback path.
+- [x] npm run build passes.
 
 ## Sprint 2 (P1)
 

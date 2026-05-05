@@ -21,6 +21,7 @@ export function renderChannelList(
   channels: Channel[],
   onSelect: (channel: Channel) => void,
   nowNextData?: NowNextData,
+  activeChannelUrl?: string,
 ): void {
   container.innerHTML = '';
 
@@ -37,7 +38,9 @@ export function renderChannelList(
 
   for (const channel of channels) {
     const item = document.createElement('li');
-    item.className = 'channel-item';
+    item.className = activeChannelUrl && channel.URL === activeChannelUrl
+      ? 'channel-item active'
+      : 'channel-item';
     item.dataset['number'] = channel.GuideNumber;
 
     const number = document.createElement('span');

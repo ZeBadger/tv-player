@@ -65,7 +65,15 @@ export function playStream(videoEl: HTMLVideoElement, url: string, options: Play
   player.on(mpegts.Events.ERROR, (errorType: unknown, errorDetail: unknown, errorInfo: unknown) => {
     console.error('[mpegts] playback error', { errorType, errorDetail, errorInfo });
     const detail = typeof errorDetail === 'string' ? errorDetail : 'UnknownError';
-    options.onError?.(`Playback error: ${detail}`);
+    const actionableMessages: Record<string, string> = {
+      HttpStatusCodeInvalid: 'Stream not found — the tuner may be busy or unavailable.',
+      NetworkError: 'Stream connection lost — check your network and tuner reachability.',
+      NetworkTimeout: 'Stream timed out — the tuner may be busy or unreachable.',
+      MediaMSEError: 'Browser could not decode the stream — try forcing transcode mode.',
+      MediaFormatError: 'Unsupported stream format — try forcing transcode mode.',
+    };
+    const message = actionableMessages[detail] ?? `Playback error (${detail}) — try switching channels.`;
+    options.onError?.(message);
   });
 
   player.attachMediaElement(videoEl);

@@ -1595,7 +1595,7 @@ const renderChannels = () => {
   visibilityBtn.textContent = `Channel visibility (${hiddenInView} hidden)`;
   renderChannelList(channelContainer, channels, (channel) => {
     startChannelPlayback(channel, true);
-  }, currentNowNextData as Record<string, Record<string, unknown>>);
+  }, currentNowNextData as Record<string, Record<string, unknown>>, activeChannel?.URL);
 };
 
 syncControlValues();
