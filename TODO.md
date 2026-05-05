@@ -19,6 +19,7 @@ Priority labels:
 - [ ] Add server request correlation id and structured log fields.
 - [ ] Ensure Docker-visible logs include timestamps where possible.
 - [ ] Fix issue where the "Next" TV show is not displayed when the current "Now" show is the last programme before midnight.
+- [ ] Work out why the selected channel highlight is lost and fix the issue so the active channel stays highlighted.
 - [ ] Add /health endpoint that validates HDHomeRun reachability.
 - [ ] Improve frontend playback error messages with actionable recovery hints.
 
@@ -31,9 +32,12 @@ Definition of done:
 
 - [ ] Add favorites and pinned channels in UI and local settings.
 - [ ] Add channel search and optional sorting by number or name.
+- [ ] Reorganise Channel settings, EPG settings, and user settings into a single Settings option with tabs.
 - [ ] Add last-channel resume on app load.
 - [ ] Persist subtitle preference by channel id.
 - [ ] Add playback status indicator for passthrough vs transcode mode.
+- [ ] Redo channel list formatting so it is clearer that Now/Next belongs to the channel above.
+- [ ] Fix hover on Now/Next so the full show name is shown in the tooltip/title text.
 - [ ] Add an admin-only usage log showing activity by different users.
 
 Definition of done:
