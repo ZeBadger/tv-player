@@ -58,10 +58,65 @@ export function renderChannelList(
     name.className = 'channel-name';
     name.textContent = channel.GuideName; // textContent, never innerHTML
 
+    const details = document.createElement('div');
+    details.className = 'channel-details';
+    details.appendChild(name);
+
+    // Keep now/next in the same compact block as the channel name.
+    if (nowNextData && nowNextData[channel.URL]) {
+      const guideData = nowNextData[channel.URL];
+      if (guideData.now || guideData.next) {
+        const guide = document.createElement('div');
+        guide.className = 'channel-guide channel-guide-inline';
+
+        if (guideData.now) {
+          const nowDiv = document.createElement('div');
+          nowDiv.className = 'guide-now';
+
+          const nowLabel = document.createElement('span');
+          nowLabel.className = 'guide-label';
+          nowLabel.textContent = 'Now';
+
+          const nowText = document.createElement('span');
+          nowText.className = 'guide-text';
+          nowText.textContent = guideData.now.title;
+          const nowFullText = [guideData.now.title, guideData.now.desc].filter(Boolean).join('\n');
+          nowText.setAttribute('data-fulltext', nowFullText);
+          nowText.title = nowFullText;
+
+          nowDiv.appendChild(nowLabel);
+          nowDiv.appendChild(nowText);
+          guide.appendChild(nowDiv);
+        }
+
+        if (guideData.next) {
+          const nextDiv = document.createElement('div');
+          nextDiv.className = 'guide-next';
+
+          const nextLabel = document.createElement('span');
+          nextLabel.className = 'guide-label';
+          nextLabel.textContent = 'Next';
+
+          const nextText = document.createElement('span');
+          nextText.className = 'guide-text';
+          nextText.textContent = guideData.next.title;
+          const nextFullText = [guideData.next.title, guideData.next.desc].filter(Boolean).join('\n');
+          nextText.setAttribute('data-fulltext', nextFullText);
+          nextText.title = nextFullText;
+
+          nextDiv.appendChild(nextLabel);
+          nextDiv.appendChild(nextText);
+          guide.appendChild(nextDiv);
+        }
+
+        details.appendChild(guide);
+      }
+    }
+
     const info = document.createElement('div');
     info.className = 'channel-info';
     info.appendChild(number);
-    info.appendChild(name);
+    info.appendChild(details);
 
     const actions = document.createElement('div');
     actions.className = 'channel-actions';
@@ -96,54 +151,6 @@ export function renderChannelList(
     }
 
     item.appendChild(info);
-
-    // Add now/next guide snippet if available
-    if (nowNextData && nowNextData[channel.URL]) {
-      const guideData = nowNextData[channel.URL];
-      if (guideData.now || guideData.next) {
-        const guide = document.createElement('div');
-        guide.className = 'channel-guide';
-        if (guideData.now) {
-          const nowDiv = document.createElement('div');
-          nowDiv.className = 'guide-now';
-
-          const nowLabel = document.createElement('span');
-          nowLabel.className = 'guide-label';
-          nowLabel.textContent = 'Now';
-
-          const nowText = document.createElement('span');
-          nowText.className = 'guide-text';
-          nowText.textContent = guideData.now.title;
-          const nowFullText = [guideData.now.title, guideData.now.desc].filter(Boolean).join('\n');
-          nowText.setAttribute('data-fulltext', nowFullText);
-          nowText.title = nowFullText;
-
-          nowDiv.appendChild(nowLabel);
-          nowDiv.appendChild(nowText);
-          guide.appendChild(nowDiv);
-        }
-        if (guideData.next) {
-          const nextDiv = document.createElement('div');
-          nextDiv.className = 'guide-next';
-
-          const nextLabel = document.createElement('span');
-          nextLabel.className = 'guide-label';
-          nextLabel.textContent = 'Next';
-
-          const nextText = document.createElement('span');
-          nextText.className = 'guide-text';
-          nextText.textContent = guideData.next.title;
-          const nextFullText = [guideData.next.title, guideData.next.desc].filter(Boolean).join('\n');
-          nextText.setAttribute('data-fulltext', nextFullText);
-          nextText.title = nextFullText;
-
-          nextDiv.appendChild(nextLabel);
-          nextDiv.appendChild(nextText);
-          guide.appendChild(nextDiv);
-        }
-        item.appendChild(guide);
-      }
-    }
 
     item.addEventListener('click', () => {
       document.querySelector('.channel-item.active')?.classList.remove('active');
