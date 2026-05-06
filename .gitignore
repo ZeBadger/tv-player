@@ -4,9 +4,14 @@ dist
 
 # AI agent/chat customization files (keep local, do not commit)
 AGENTS.md
+CLAUDE.md
 AGENT.md
 .github/copilot-instructions.md
 .github/instructions/
 .github/prompts/
 .github/agents/
 .github/skills/
+
+# Local runtime/generated files
+data/auth.json
+epg/guide.xml
