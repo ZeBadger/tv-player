@@ -90,6 +90,28 @@ describe('streamUrl', () => {
     expect(url).not.toContain('captions');
   });
 
+  it('appends profile query for SD transcode when profile is selected', () => {
+    const url = streamUrl(tvSd, { transcodeProfile: 'quality' });
+    expect(url).toContain('/hdhomerun-transcode/auto/v1');
+    expect(url).toContain('profile=quality');
+  });
+
+  it('appends profile query for forceTranscode HD when profile is selected', () => {
+    const url = streamUrl(tvHd, { forceTranscode: true, transcodeProfile: 'low' });
+    expect(url).toContain('/hdhomerun-transcode/auto/v101');
+    expect(url).toContain('profile=low');
+  });
+
+  it('does not append profile query for radio channels', () => {
+    const url = streamUrl(radio, { transcodeProfile: 'quality' });
+    expect(url).not.toContain('profile=');
+  });
+
+  it('does not append profile query for HD passthrough', () => {
+    const url = streamUrl(tvHd, { transcodeProfile: 'quality' });
+    expect(url).not.toContain('profile=');
+  });
+
   it('preserves query string parameters from the device URL', () => {
     const ch: Channel = { ...tvSd, URL: 'http://192.168.0.49:5004/auto/v1?transcode=mobile' };
     const url = streamUrl(ch);

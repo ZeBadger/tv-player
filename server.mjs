@@ -24,12 +24,42 @@ const hdhomerunHost = process.env.HDHOMERUN_HOST ?? '192.168.0.49';
 const apiBase = `http://${hdhomerunHost}`;
 const streamBase = `http://${hdhomerunHost}:5004`;
 const transcodePreset = process.env.TRANSCODE_PRESET ?? 'ultrafast';
-const transcodeScale = process.env.TRANSCODE_SCALE ?? '960:-2';
+const transcodeScale = process.env.TRANSCODE_SCALE ?? "'min(iw,960)':-2";
 const transcodeFps = process.env.TRANSCODE_FPS ?? '25';
 const transcodeVideoBitrate = process.env.TRANSCODE_VIDEO_BITRATE ?? '1800k';
 const transcodeVideoMaxrate = process.env.TRANSCODE_VIDEO_MAXRATE ?? '2200k';
 const transcodeVideoBufsize = process.env.TRANSCODE_VIDEO_BUFSIZE ?? '4400k';
 const transcodeAudioBitrate = process.env.TRANSCODE_AUDIO_BITRATE ?? '96k';
+
+const transcodeProfiles = {
+  quality: {
+    preset: process.env.TRANSCODE_QUALITY_PRESET ?? 'slow',
+    scale: process.env.TRANSCODE_QUALITY_SCALE ?? "'min(iw,1280)':-2",
+    fps: process.env.TRANSCODE_QUALITY_FPS ?? '25',
+    videoBitrate: process.env.TRANSCODE_QUALITY_VIDEO_BITRATE ?? '2600k',
+    videoMaxrate: process.env.TRANSCODE_QUALITY_VIDEO_MAXRATE ?? '3200k',
+    videoBufsize: process.env.TRANSCODE_QUALITY_VIDEO_BUFSIZE ?? '6400k',
+    audioBitrate: process.env.TRANSCODE_QUALITY_AUDIO_BITRATE ?? '128k',
+  },
+  balanced: {
+    preset: transcodePreset,
+    scale: transcodeScale,
+    fps: transcodeFps,
+    videoBitrate: transcodeVideoBitrate,
+    videoMaxrate: transcodeVideoMaxrate,
+    videoBufsize: transcodeVideoBufsize,
+    audioBitrate: transcodeAudioBitrate,
+  },
+  low: {
+    preset: process.env.TRANSCODE_LOW_PRESET ?? 'veryfast',
+    scale: process.env.TRANSCODE_LOW_SCALE ?? "'min(iw,640)':-2",
+    fps: process.env.TRANSCODE_LOW_FPS ?? '25',
+    videoBitrate: process.env.TRANSCODE_LOW_VIDEO_BITRATE ?? '900k',
+    videoMaxrate: process.env.TRANSCODE_LOW_VIDEO_MAXRATE ?? '1200k',
+    videoBufsize: process.env.TRANSCODE_LOW_VIDEO_BUFSIZE ?? '2400k',
+    audioBitrate: process.env.TRANSCODE_LOW_AUDIO_BITRATE ?? '64k',
+  },
+};
 const ffprobeTimeoutMs = Number(process.env.FFPROBE_TIMEOUT_MS ?? 10000);
 const ffmpegStartTimeoutMs = Number(process.env.FFMPEG_START_TIMEOUT_MS ?? 12000);
 const ffmpegIdleTimeoutMs = Number(process.env.FFMPEG_IDLE_TIMEOUT_MS ?? 25000);
@@ -681,8 +711,14 @@ const transcodeStream = async (req, res) => {
   const reqUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
   const upstreamPath = reqUrl.pathname.slice('/hdhomerun-transcode'.length) || '/';
   const upstreamSearchParams = new URLSearchParams(reqUrl.searchParams);
+  const requestedProfile = reqUrl.searchParams.get('profile');
+  const transcodeProfileName = requestedProfile === 'quality' || requestedProfile === 'low' || requestedProfile === 'balanced'
+    ? requestedProfile
+    : 'balanced';
+  const profile = transcodeProfiles[transcodeProfileName];
   const burnCaptions = upstreamSearchParams.get('captions') === 'burn';
   upstreamSearchParams.delete('captions');
+  upstreamSearchParams.delete('profile');
   const upstreamSearch = upstreamSearchParams.toString();
   const sourceUrl = new URL(upstreamPath + (upstreamSearch ? `?${upstreamSearch}` : ''), `${streamBase}/`).toString();
   // UK Freeview (DVB) carries subtitles as a separate stream, not as NTSC
@@ -691,14 +727,14 @@ const transcodeStream = async (req, res) => {
   // fail — the client then falls back to non-caption playback on retry.
   const videoMappingArgs = burnCaptions
     ? [
-        '-filter_complex', `[0:v]yadif=mode=send_frame,scale=${transcodeScale}[v];[0:s:0]scale=${transcodeScale}[s];[v][s]overlay[out]`,
+        '-filter_complex', `[0:v]yadif=mode=send_frame,scale=${profile.scale}[v];[0:s:0]scale=${profile.scale}[s];[v][s]overlay[out]`,
         '-map', '[out]',
         '-map', '0:a:0?',
       ]
     : [
         '-map', '0:v:0',
         '-map', '0:a:0?',
-        '-vf', `yadif=mode=send_frame,scale=${transcodeScale}`,
+        '-vf', `yadif=mode=send_frame,scale=${profile.scale}`,
       ];
 
   if ((req.method ?? 'GET') === 'HEAD') {
@@ -748,26 +784,26 @@ const transcodeStream = async (req, res) => {
     '-i', sourceUrl,
     ...videoMappingArgs,
     '-c:v', 'libx264',
-    '-preset', transcodePreset,
+    '-preset', profile.preset,
     '-tune', 'zerolatency',
     '-profile:v', 'main',
     '-level', '3.1',
     '-pix_fmt', 'yuv420p',
-    '-r', transcodeFps,
+    '-r', profile.fps,
     // cfr: drop/duplicate frames as needed so output is always exactly
     // transcodeFps — keeps PTS monotonic regardless of input jitter.
     '-fps_mode', 'cfr',
-    '-g', transcodeFps,
-    '-keyint_min', transcodeFps,
+    '-g', profile.fps,
+    '-keyint_min', profile.fps,
     '-sc_threshold', '0',
-    '-b:v', transcodeVideoBitrate,
-    '-maxrate', transcodeVideoMaxrate,
-    '-bufsize', transcodeVideoBufsize,
+    '-b:v', profile.videoBitrate,
+    '-maxrate', profile.videoMaxrate,
+    '-bufsize', profile.videoBufsize,
     // aresample async=1000: fill audio gaps by resampling rather than
     // inserting silence, preventing the occasional audio glitch.
     '-af', 'aresample=async=1000',
     '-c:a', 'aac',
-    '-b:a', transcodeAudioBitrate,
+    '-b:a', profile.audioBitrate,
     '-ac', '2',
     '-ar', '48000',
     '-f', 'mpegts',

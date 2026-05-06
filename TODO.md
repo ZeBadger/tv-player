@@ -42,12 +42,12 @@ Definition of done:
 
 Definition of done:
 
-- [ ] Manual validation of HD, SD, and radio flows after UX changes.
+- [x] Manual validation of HD, SD, and radio flows after UX changes.
 
 ## Sprint 3 (P1/P2)
 
 - [x] Add configurable concurrent stream capacity to support multi-user viewing based on tuner count.
-- [ ] Add selectable transcode profiles (quality, balanced, low bandwidth).
+- [x] Add selectable transcode profiles (quality, balanced, low bandwidth).
 - [ ] Add adaptive retry policy based on known error categories.
 - [ ] Add a lightweight diagnostics page that surfaces server stream metrics.
 - [ ] Add optional tuner-thrash protection when channels are switched rapidly.

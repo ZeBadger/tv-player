@@ -22,6 +22,7 @@ const TRANSCODE_BASE = '/hdhomerun-transcode';
 export type StreamOptions = {
   forceTranscode?: boolean;
   captionsMode?: 'none' | 'burn';
+  transcodeProfile?: 'quality' | 'balanced' | 'low';
 };
 
 export async function fetchChannels(): Promise<Channel[]> {
@@ -55,14 +56,25 @@ export function isRadio(channel: Channel): boolean {
 export function streamUrl(channel: Channel, options: StreamOptions = {}): string {
   const deviceUrl = new URL(channel.URL);
   const path = `${deviceUrl.pathname}${deviceUrl.search}`;
-  const burnCaptionQuery = options.captionsMode === 'burn' ? `${path.includes('?') ? '&' : '?'}captions=burn` : '';
+
+  const transcodeParams = new URLSearchParams();
+  if (options.captionsMode === 'burn') {
+    transcodeParams.set('captions', 'burn');
+  }
+  if (options.transcodeProfile) {
+    transcodeParams.set('profile', options.transcodeProfile);
+  }
+
+  const transcodeSuffix = transcodeParams.size > 0
+    ? `${path.includes('?') ? '&' : '?'}${transcodeParams.toString()}`
+    : '';
 
   if (!channel.VideoCodec && channel.AudioCodec) {
     return `${RADIO_BASE}${path}`;
   }
 
   if (options.forceTranscode || !channel.HD) {
-    return `${TRANSCODE_BASE}${path}${burnCaptionQuery}`;
+    return `${TRANSCODE_BASE}${path}${transcodeSuffix}`;
   }
 
   return `${STREAM_BASE}${path}`;

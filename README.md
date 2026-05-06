@@ -17,6 +17,7 @@ Created by [ZeBadger](https://github.com/ZeBadger).
 - Admin-only access management with user/token controls and usage log
 - Optional admin-only "More info" toggle for playback internals (transcode/passthrough details)
 - DVB subtitle burn-in for supported channels
+- Selectable SD transcode profiles (Quality, Balanced, Low bandwidth)
 
 ## Requirements
 
@@ -62,6 +63,22 @@ All settings are in `compose.yaml`:
 | `TRANSCODE_VIDEO_MAXRATE` | `2200k` | Maximum video bitrate |
 | `TRANSCODE_VIDEO_BUFSIZE` | `4400k` | Video rate control buffer size |
 | `TRANSCODE_AUDIO_BITRATE` | `96k` | AAC audio bitrate |
+| `TRANSCODE_QUALITY_PRESET` | `slow` | Quality profile x264 preset |
+| `TRANSCODE_QUALITY_SCALE` | `1280:-2` | Quality profile output resolution |
+| `TRANSCODE_QUALITY_FPS` | `25` | Quality profile frame rate |
+| `TRANSCODE_QUALITY_VIDEO_BITRATE` | `2600k` | Quality profile target video bitrate |
+| `TRANSCODE_QUALITY_VIDEO_MAXRATE` | `3200k` | Quality profile max video bitrate |
+| `TRANSCODE_QUALITY_VIDEO_BUFSIZE` | `6400k` | Quality profile video buffer size |
+| `TRANSCODE_QUALITY_AUDIO_BITRATE` | `128k` | Quality profile AAC bitrate |
+| `TRANSCODE_LOW_PRESET` | `veryfast` | Low-bandwidth profile x264 preset |
+| `TRANSCODE_LOW_SCALE` | `640:-2` | Low-bandwidth profile output resolution |
+| `TRANSCODE_LOW_FPS` | `25` | Low-bandwidth profile frame rate |
+| `TRANSCODE_LOW_VIDEO_BITRATE` | `900k` | Low-bandwidth profile target video bitrate |
+| `TRANSCODE_LOW_VIDEO_MAXRATE` | `1200k` | Low-bandwidth profile max video bitrate |
+| `TRANSCODE_LOW_VIDEO_BUFSIZE` | `2400k` | Low-bandwidth profile video buffer size |
+| `TRANSCODE_LOW_AUDIO_BITRATE` | `64k` | Low-bandwidth profile AAC bitrate |
+
+The **Balanced** profile uses the existing `TRANSCODE_*` settings. In the app, choose profile from **Settings -> Channel Settings -> SD transcode profile**.
 
 ## Token Access (No Password Prompts)
 

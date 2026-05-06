@@ -9,6 +9,7 @@ type TvFilter = 'sd' | 'hd' | 'both';
 type AppSettings = {
   mode: Mode;
   tvFilter: TvFilter;
+  transcodeProfile: 'quality' | 'balanced' | 'low';
   hiddenChannelIds: string[];
   showGuideSnippets: boolean;
   favoriteChannelIds: string[];
@@ -158,6 +159,7 @@ const setFavoriteState = (channel: Channel, favorite: boolean) => {
 const defaultSettings: AppSettings = {
   mode: 'tv',
   tvFilter: 'both',
+  transcodeProfile: 'balanced',
   hiddenChannelIds: [],
   showGuideSnippets: true,
   favoriteChannelIds: [],
@@ -176,6 +178,7 @@ const loadSettings = (): AppSettings => {
 
     const mode = (parsed as Record<string, unknown>).mode;
     const tvFilter = (parsed as Record<string, unknown>).tvFilter;
+    const transcodeProfile = (parsed as Record<string, unknown>).transcodeProfile;
     const hiddenChannelIds = (parsed as Record<string, unknown>).hiddenChannelIds;
     const showGuideSnippets = (parsed as Record<string, unknown>).showGuideSnippets;
     const favoriteChannelIds = (parsed as Record<string, unknown>).favoriteChannelIds;
@@ -187,6 +190,9 @@ const loadSettings = (): AppSettings => {
     return {
       mode: mode === 'radio' ? 'radio' : 'tv',
       tvFilter: tvFilter === 'sd' || tvFilter === 'hd' || tvFilter === 'both' ? tvFilter : 'both',
+      transcodeProfile: transcodeProfile === 'quality' || transcodeProfile === 'low' || transcodeProfile === 'balanced'
+        ? transcodeProfile
+        : 'balanced',
       hiddenChannelIds: Array.isArray(hiddenChannelIds)
         ? hiddenChannelIds.filter((v): v is string => typeof v === 'string')
         : [],
@@ -502,6 +508,14 @@ app.innerHTML = `
         <section id="settings-panel-channel" class="settings-panel">
           <h3>Channel Settings</h3>
           <p>Manage visibility and sidebar guide display.</p>
+          <div class="settings-row">
+            <label for="transcode-profile" class="settings-label">SD transcode profile</label>
+            <select id="transcode-profile" class="settings-select">
+              <option value="quality">Quality</option>
+              <option value="balanced">Balanced</option>
+              <option value="low">Low bandwidth</option>
+            </select>
+          </div>
           <div class="settings-actions">
             <button id="visibility-btn" class="hidden-settings-btn" type="button">Channel visibility</button>
           </div>
@@ -547,6 +561,7 @@ const settingsBtn = document.getElementById('settings-btn') as HTMLButtonElement
 const settingsModal = document.getElementById('settings-modal')!;
 const settingsCloseBtn = document.getElementById('settings-close') as HTMLButtonElement;
 const settingsCurrentUserEl = document.getElementById('settings-current-user')!;
+const transcodeProfileEl = document.getElementById('transcode-profile') as HTMLSelectElement;
 const moreInfoToggleBtn = document.getElementById('more-info-toggle') as HTMLButtonElement;
 const visibilityBtn = document.getElementById('visibility-btn') as HTMLButtonElement;
 const visibilityModal = document.getElementById('visibility-modal')!;
@@ -1345,6 +1360,7 @@ const setModeUi = () => {
 const syncControlValues = () => {
   modeFilterEl.value = settings.mode;
   tvFilterEl.value = settings.tvFilter;
+  transcodeProfileEl.value = settings.transcodeProfile;
   channelSortEl.value = settings.channelSort;
   guideSnippetsToggleBtn.textContent = `Guide Detail: ${settings.showGuideSnippets ? 'On' : 'Off'}`;
   moreInfoToggleBtn.textContent = `More info: ${settings.showPlaybackDetails ? 'On' : 'Off'}`;
@@ -1440,9 +1456,12 @@ const getPlaybackModeLabel = (channel: Channel): string => {
   const url = streamUrl(channel, {
     forceTranscode: burnInCaptionsEnabled && !isRadio(channel),
     captionsMode: burnInCaptionsEnabled ? 'burn' : 'none',
+    transcodeProfile: settings.transcodeProfile,
   });
 
-  if (url.startsWith('/hdhomerun-transcode/')) return 'Transcode';
+  if (url.startsWith('/hdhomerun-transcode/')) {
+    return `Transcode (${settings.transcodeProfile})`;
+  }
   if (url.startsWith('/hdhomerun-radio/')) return 'Radio passthrough';
   return 'TV passthrough';
 };
@@ -1592,6 +1611,7 @@ const startChannelPlayback = (channel: Channel, resetFailures: boolean) => {
   const stream = streamUrl(channel, {
     forceTranscode: burnInCaptionsEnabled && !isRadio(channel),
     captionsMode: burnInCaptionsEnabled ? 'burn' : 'none',
+    transcodeProfile: settings.transcodeProfile,
   });
 
   void fetchStreamInfo(true);
@@ -1973,6 +1993,18 @@ channelSortEl.addEventListener('change', () => {
   settings.channelSort = channelSortEl.value === 'name' ? 'name' : 'number';
   saveSettings(settings);
   renderChannels();
+});
+
+transcodeProfileEl.addEventListener('change', () => {
+  const value = transcodeProfileEl.value;
+  settings.transcodeProfile = value === 'quality' || value === 'low' || value === 'balanced' ? value : 'balanced';
+  saveSettings(settings);
+
+  if (activeChannel && !isRadio(activeChannel) && (!activeChannel.HD || burnInCaptionsEnabled)) {
+    setPlaybackStatus(`Applying ${settings.transcodeProfile} transcode profile...`, 'info', { timeoutMs: 2000 });
+    startChannelPlayback(activeChannel, true);
+  }
+  renderNowPlayingBar();
 });
 
 modalTvFilterEl.addEventListener('change', () => {
