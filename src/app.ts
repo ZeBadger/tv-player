@@ -237,9 +237,12 @@ app.innerHTML = `
   </section>
 
   <div class="layout">
-    <aside class="sidebar">
+    <aside id="app-sidebar" class="sidebar">
       <header class="sidebar-header">
-        <h1>TV Player</h1>
+        <div class="sidebar-title-row">
+          <h1>TV Player</h1>
+          <button id="mobile-sidebar-close" class="mobile-sidebar-close" type="button" aria-label="Close channels panel">Close</button>
+        </div>
         <p id="current-user" class="current-user" hidden></p>
         <div class="channel-controls">
           <div class="controls-row">
@@ -286,7 +289,9 @@ app.innerHTML = `
       </div>
       <div class="app-credit">Created by <a href="https://github.com/ZeBadger" target="_blank" rel="noopener noreferrer">ZeBadger</a></div>
     </aside>
+    <button id="mobile-sidebar-backdrop" class="mobile-sidebar-backdrop" type="button" aria-label="Close channels panel"></button>
     <main class="main">
+      <button id="mobile-sidebar-open" class="mobile-sidebar-open" type="button" aria-controls="app-sidebar" aria-expanded="false">Channels</button>
       <video id="video" class="video-player" controls autoplay></video>
       <button id="resume-play-btn" class="resume-play-btn" type="button" hidden>Play</button>
       <div id="radio-card" class="radio-card" aria-hidden="true">
@@ -542,6 +547,11 @@ app.innerHTML = `
 `;
 
 const videoEl = document.getElementById('video') as HTMLVideoElement;
+const layoutEl = document.querySelector('.layout')!;
+const sidebarEl = document.getElementById('app-sidebar')!;
+const mobileSidebarOpenBtn = document.getElementById('mobile-sidebar-open') as HTMLButtonElement;
+const mobileSidebarCloseBtn = document.getElementById('mobile-sidebar-close') as HTMLButtonElement;
+const mobileSidebarBackdrop = document.getElementById('mobile-sidebar-backdrop') as HTMLButtonElement;
 const channelContainer = document.getElementById('channel-list-container')!;
 const nowPlaying = document.getElementById('now-playing')!;
 const mainEl = document.querySelector('.main')!;
@@ -657,6 +667,35 @@ let selectedAdminUserId: string | null = null;
 let appInitialized = false;
 let reopenSettingsAfterSubModalClose = false;
 let pendingScrollToActiveChannel = false;
+let mobileSidebarOpen = false;
+
+const mobileLayoutQuery = window.matchMedia('(max-width: 900px)');
+
+const applyMobileSidebarState = () => {
+  const isMobile = mobileLayoutQuery.matches;
+  if (!isMobile) {
+    mobileSidebarOpen = false;
+  }
+
+  layoutEl.classList.toggle('mobile-sidebar-open', isMobile && mobileSidebarOpen);
+  sidebarEl.setAttribute('aria-hidden', isMobile && !mobileSidebarOpen ? 'true' : 'false');
+  mobileSidebarOpenBtn.setAttribute('aria-expanded', isMobile && mobileSidebarOpen ? 'true' : 'false');
+};
+
+const openMobileSidebar = () => {
+  if (!mobileLayoutQuery.matches) return;
+  mobileSidebarOpen = true;
+  applyMobileSidebarState();
+};
+
+const closeMobileSidebar = () => {
+  if (!mobileLayoutQuery.matches) return;
+  mobileSidebarOpen = false;
+  applyMobileSidebarState();
+};
+
+applyMobileSidebarState();
+mobileLayoutQuery.addEventListener('change', applyMobileSidebarState);
 
 initPlayer(videoEl);
 videoEl.setAttribute('controlsList', 'nodownload noplaybackrate');
@@ -1930,6 +1969,7 @@ const renderChannels = () => {
   visibilityBtn.textContent = `Channel visibility (${hiddenInView} hidden)`;
   renderChannelList(channelContainer, channels, (channel) => {
     startChannelPlayback(channel, true);
+    closeMobileSidebar();
   }, currentNowNextData as Record<string, Record<string, unknown>>, {
     activeChannelUrl: activeChannel?.URL,
     favoriteChannelIds: new Set(settings.favoriteChannelIds),
@@ -1947,6 +1987,18 @@ const renderChannels = () => {
     });
   }
 };
+
+mobileSidebarOpenBtn.addEventListener('click', () => {
+  openMobileSidebar();
+});
+
+mobileSidebarCloseBtn.addEventListener('click', () => {
+  closeMobileSidebar();
+});
+
+mobileSidebarBackdrop.addEventListener('click', () => {
+  closeMobileSidebar();
+});
 
 syncControlValues();
 setModeUi();

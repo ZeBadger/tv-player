@@ -139,6 +139,28 @@ html, body {
   color: var(--accent);
 }
 
+.sidebar-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mobile-sidebar-close {
+  display: none;
+  background: #111;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.mobile-sidebar-open,
+.mobile-sidebar-backdrop {
+  display: none;
+}
+
 .current-user {
   margin-top: 6px;
   font-size: 11px;
@@ -1079,6 +1101,106 @@ html, body {
   isolation: isolate;
   overflow: hidden;
   background: #000;
+}
+
+@media (max-width: 900px) {
+  .layout {
+    position: relative;
+  }
+
+  .sidebar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(88vw, 360px);
+    min-width: 0;
+    max-width: none;
+    border-right: 1px solid var(--border);
+    transform: translateX(-102%);
+    transition: transform 180ms ease;
+    z-index: 20;
+    box-shadow: 10px 0 28px rgba(0, 0, 0, 0.45);
+  }
+
+  .layout.mobile-sidebar-open .sidebar {
+    transform: translateX(0);
+  }
+
+  .mobile-sidebar-open {
+    display: inline-flex;
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    z-index: 6;
+    background: rgba(10, 28, 43, 0.92);
+    border: 1px solid rgba(132, 185, 230, 0.75);
+    color: #f2f9ff;
+    border-radius: 999px;
+    padding: 8px 14px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .mobile-sidebar-close {
+    display: inline-flex;
+    cursor: pointer;
+  }
+
+  .mobile-sidebar-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 18;
+    border: 0;
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  .layout:not(.mobile-sidebar-open) .mobile-sidebar-backdrop {
+    display: none;
+  }
+
+  .layout.mobile-sidebar-open .mobile-sidebar-backdrop {
+    display: block;
+  }
+
+  .controls-row {
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .control-inline,
+  .control-inline-wide,
+  .control-inline-sort {
+    flex: 1;
+  }
+
+  .channel-item {
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  .now-playing {
+    padding: 8px 10px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .now-playing-badges {
+    margin-left: 0;
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .stream-info {
+    max-width: 100%;
+    text-align: left;
+  }
+
+  .guide-panel {
+    padding: 8px 10px 12px;
+    flex-direction: column;
+  }
 }
 
 /* Video */
