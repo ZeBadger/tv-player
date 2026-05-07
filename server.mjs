@@ -70,6 +70,8 @@ const maxConcurrentStreams = Number.isFinite(maxConcurrentStreamsRaw) && maxConc
 // How long to wait after killing the previous ffmpeg before starting the next
 // one, to give the HDHomeRun time to release the tuner slot.
 const tunerReleaseDelayMs = Number(process.env.TUNER_RELEASE_DELAY_MS ?? 300);
+const tunerSwitchCooldownMs = Math.max(0, Number(process.env.TUNER_SWITCH_COOLDOWN_MS ?? 350));
+const tunerSwitchStateTtlMs = Math.max(1000, Number(process.env.TUNER_SWITCH_STATE_TTL_MS ?? 5 * 60 * 1000));
 
 // EPG configuration (allow runtime updates)
 const defaultSidecarEpgSourceUrl = 'http://iptv-epg:3000/guide.xml';
@@ -103,6 +105,57 @@ const authDefaultTokenTtlHours = Number.isFinite(authDefaultTokenTtlHoursRaw) &&
 const activePlaybackSessions = new Map();
 let playbackSessionId = 0;
 let playbackGate = Promise.resolve();
+const recentSwitchByIp = new Map();
+const streamMetrics = {
+  startedAt: new Date().toISOString(),
+  requests: {
+    passthrough: 0,
+    remux: 0,
+    radio: 0,
+    transcode: 0,
+  },
+  session: {
+    opened: 0,
+    rejected: 0,
+    ended: 0,
+    forcedTakeover: 0,
+    totalDurationMs: 0,
+  },
+  tunerProtection: {
+    cooldownApplied: 0,
+    cooldownWaitTotalMs: 0,
+  },
+  ffmpeg: {
+    started: 0,
+    startTimeouts: 0,
+    idleTimeouts: 0,
+    startErrors: 0,
+    nonZeroExits: 0,
+  },
+  recentErrors: [],
+};
+
+const pushStreamErrorMetric = (source, message) => {
+  streamMetrics.recentErrors.push({
+    at: nowIso(),
+    source,
+    message,
+  });
+
+  if (streamMetrics.recentErrors.length > 30) {
+    streamMetrics.recentErrors.splice(0, streamMetrics.recentErrors.length - 30);
+  }
+};
+
+const noteSessionEnded = (session, reason) => {
+  if (!session) return;
+  const durationMs = Math.max(0, Date.now() - Number(session.startedAt ?? Date.now()));
+  streamMetrics.session.ended += 1;
+  streamMetrics.session.totalDurationMs += durationMs;
+  if (reason === 'forced_takeover') {
+    streamMetrics.session.forcedTakeover += 1;
+  }
+};
 
 // EPG data cache
 let epgData = null;
@@ -149,6 +202,7 @@ const releaseAllActivePlaybackLocked = async () => {
   activePlaybackSessions.clear();
 
   for (const session of sessions) {
+    noteSessionEnded(session, 'forced_takeover');
     try {
       session.stop(true);
     } catch {
@@ -165,6 +219,7 @@ const acquirePlaybackSession = async (type, stop) => {
     if (maxConcurrentStreams === 1) {
       await releaseAllActivePlaybackLocked();
     } else if (activePlaybackSessions.size >= maxConcurrentStreams) {
+      streamMetrics.session.rejected += 1;
       return {
         ok: false,
         statusCode: 503,
@@ -182,6 +237,8 @@ const acquirePlaybackSession = async (type, stop) => {
       if (released) return;
       released = true;
       void withPlaybackGate(async () => {
+        const session = activePlaybackSessions.get(id);
+        noteSessionEnded(session, 'completed');
         activePlaybackSessions.delete(id);
       });
     };
@@ -192,6 +249,7 @@ const acquirePlaybackSession = async (type, stop) => {
       stop,
       startedAt: Date.now(),
     });
+    streamMetrics.session.opened += 1;
 
     return {
       ok: true,
@@ -201,6 +259,32 @@ const acquirePlaybackSession = async (type, stop) => {
       limit: maxConcurrentStreams,
     };
   });
+};
+
+const applyTunerSwitchCooldown = async (req) => {
+  if (tunerSwitchCooldownMs <= 0) return;
+
+  const ip = getRequestIp(req);
+  const now = Date.now();
+  const previousAt = recentSwitchByIp.get(ip);
+
+  if (typeof previousAt === 'number') {
+    const elapsedMs = now - previousAt;
+    if (elapsedMs >= 0 && elapsedMs < tunerSwitchCooldownMs) {
+      const waitMs = tunerSwitchCooldownMs - elapsedMs;
+      streamMetrics.tunerProtection.cooldownApplied += 1;
+      streamMetrics.tunerProtection.cooldownWaitTotalMs += waitMs;
+      await wait(waitMs);
+    }
+  }
+
+  recentSwitchByIp.set(ip, Date.now());
+  if (recentSwitchByIp.size > 512) {
+    const cutoff = Date.now() - tunerSwitchStateTtlMs;
+    for (const [key, stamp] of recentSwitchByIp.entries()) {
+      if (stamp < cutoff) recentSwitchByIp.delete(key);
+    }
+  }
 };
 
 const parseProbeFps = (value) => {
@@ -650,7 +734,15 @@ const proxyFetch = async (req, res, upstreamBase, prefix) => {
   res.end();
 };
 
-const passthroughStream = async (req, res, prefix) => {
+const passthroughStream = async (req, res, prefix, requestType = 'passthrough') => {
+  if (requestType === 'radio') {
+    streamMetrics.requests.radio += 1;
+  } else {
+    streamMetrics.requests.passthrough += 1;
+  }
+
+  await applyTunerSwitchCooldown(req);
+
   const reqUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
   const upstreamPath = reqUrl.pathname.slice(prefix.length) || '/';
   const sourceUrl = new URL(upstreamPath + reqUrl.search, `${streamBase}/`).toString();
@@ -671,10 +763,11 @@ const passthroughStream = async (req, res, prefix) => {
   let upstreamRes;
   try {
     upstreamRes = await fetch(sourceUrl, { signal: controller.signal });
-  } catch {
+  } catch (err) {
     req.off('close', cleanup);
     slot.release();
     if (controller.signal.aborted) { res.end(); return; }
+    pushStreamErrorMetric('passthrough_fetch', err instanceof Error ? err.message : String(err));
     respond(res, 503, 'Stream unavailable');
     return;
   }
@@ -707,7 +800,161 @@ const passthroughStream = async (req, res, prefix) => {
   res.end();
 };
 
+const remuxStream = async (req, res) => {
+  streamMetrics.requests.remux += 1;
+  await applyTunerSwitchCooldown(req);
+
+  const reqUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+  const upstreamPath = reqUrl.pathname.slice('/hdhomerun-remux'.length) || '/';
+  const sourceUrl = new URL(upstreamPath + reqUrl.search, `${streamBase}/`).toString();
+
+  if ((req.method ?? 'GET') === 'HEAD') {
+    res.writeHead(200, {
+      'content-type': 'video/mp2t',
+      'cache-control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
+      'access-control-allow-origin': '*',
+      connection: 'keep-alive',
+    });
+    res.end();
+    return;
+  }
+
+  let ffmpeg = null;
+
+  const stopFfmpeg = (force = false) => {
+    if (ffmpeg && !ffmpeg.killed) {
+      if (force) {
+        ffmpeg.kill('SIGKILL');
+      } else {
+        ffmpeg.kill('SIGTERM');
+        setTimeout(() => {
+          if (ffmpeg && !ffmpeg.killed) ffmpeg.kill('SIGKILL');
+        }, 500);
+      }
+    }
+  };
+
+  const slot = await acquirePlaybackSession('remux', (force) => stopFfmpeg(Boolean(force)));
+  if (!slot.ok) {
+    respond(res, slot.statusCode, slot.message);
+    return;
+  }
+
+  streamMetrics.ffmpeg.started += 1;
+
+  ffmpeg = spawn('ffmpeg', [
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-fflags', '+genpts+igndts+discardcorrupt',
+    '-rw_timeout', '10000000',
+    '-analyzeduration', '2M',
+    '-probesize', '2M',
+    '-i', sourceUrl,
+    '-map', '0:v:0',
+    '-map', '0:a:0?',
+    '-c:v', 'copy',
+    // Keep video copy for low CPU, but normalize audio timing so overlapping
+    // AAC PTS from the source does not stall browser playback.
+    '-af', 'aresample=async=1000',
+    '-c:a', 'aac',
+    '-b:a', '128k',
+    '-ac', '2',
+    '-ar', '48000',
+    '-f', 'mpegts',
+    'pipe:1',
+  ]);
+
+  let started = false;
+  let startTimer;
+  let idleTimer;
+
+  const clearWatchdogs = () => {
+    if (startTimer) clearTimeout(startTimer);
+    if (idleTimer) clearTimeout(idleTimer);
+  };
+
+  const armIdleTimer = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      console.error('[ffmpeg-remux] idle timeout, force-killing process');
+      streamMetrics.ffmpeg.idleTimeouts += 1;
+      pushStreamErrorMetric('ffmpeg_remux_idle_timeout', 'idle timeout');
+      stopFfmpeg(true);
+    }, ffmpegIdleTimeoutMs);
+  };
+
+  startTimer = setTimeout(() => {
+    if (!started) {
+      console.error('[ffmpeg-remux] start timeout, force-killing process');
+      streamMetrics.ffmpeg.startTimeouts += 1;
+      pushStreamErrorMetric('ffmpeg_remux_start_timeout', 'start timeout');
+      stopFfmpeg(true);
+    }
+  }, ffmpegStartTimeoutMs);
+
+  armIdleTimer();
+
+  req.on('aborted', stopFfmpeg);
+  req.on('close', stopFfmpeg);
+  res.on('close', stopFfmpeg);
+
+  ffmpeg.stderr.on('data', (chunk) => {
+    console.error(`[ffmpeg-remux] ${chunk.toString().trim()}`);
+  });
+
+  ffmpeg.stdout.on('data', (chunk) => {
+    if (!started) {
+      started = true;
+      res.writeHead(200, {
+        'content-type': 'video/mp2t',
+        'cache-control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
+        'access-control-allow-origin': '*',
+        connection: 'keep-alive',
+      });
+    }
+
+    armIdleTimer();
+    res.write(chunk);
+  });
+
+  ffmpeg.on('error', (err) => {
+    clearWatchdogs();
+    slot.release();
+    streamMetrics.ffmpeg.startErrors += 1;
+    pushStreamErrorMetric('ffmpeg_remux_start_error', err instanceof Error ? err.message : 'ffmpeg remux spawn error');
+    if (!res.headersSent) {
+      respond(res, 503, 'Remuxer failed to start');
+      return;
+    }
+    res.end();
+  });
+
+  ffmpeg.on('exit', (code) => {
+    clearWatchdogs();
+    slot.release();
+    if (typeof code === 'number' && code !== 0) {
+      streamMetrics.ffmpeg.nonZeroExits += 1;
+      pushStreamErrorMetric('ffmpeg_remux_exit', `exit code ${code}`);
+    }
+    if (res.writableEnded) return;
+
+    if (!started) {
+      if (!res.headersSent) {
+        respond(res, 503, 'Remuxer could not open stream');
+      } else {
+        res.end();
+      }
+      return;
+    }
+
+    res.end();
+  });
+};
+
 const transcodeStream = async (req, res) => {
+  streamMetrics.requests.transcode += 1;
+  await applyTunerSwitchCooldown(req);
+
   const reqUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
   const upstreamPath = reqUrl.pathname.slice('/hdhomerun-transcode'.length) || '/';
   const upstreamSearchParams = new URLSearchParams(reqUrl.searchParams);
@@ -769,6 +1016,8 @@ const transcodeStream = async (req, res) => {
     return;
   }
 
+  streamMetrics.ffmpeg.started += 1;
+
   ffmpeg = spawn('ffmpeg', [
     '-hide_banner',
     '-loglevel', 'error',
@@ -823,6 +1072,8 @@ const transcodeStream = async (req, res) => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
       console.error('[ffmpeg] idle timeout, force-killing process');
+      streamMetrics.ffmpeg.idleTimeouts += 1;
+      pushStreamErrorMetric('ffmpeg_idle_timeout', 'idle timeout');
       stopFfmpeg(true);
     }, ffmpegIdleTimeoutMs);
   };
@@ -830,6 +1081,8 @@ const transcodeStream = async (req, res) => {
   startTimer = setTimeout(() => {
     if (!started) {
       console.error('[ffmpeg] start timeout, force-killing process');
+      streamMetrics.ffmpeg.startTimeouts += 1;
+      pushStreamErrorMetric('ffmpeg_start_timeout', 'start timeout');
       stopFfmpeg(true);
     }
   }, ffmpegStartTimeoutMs);
@@ -859,9 +1112,11 @@ const transcodeStream = async (req, res) => {
     res.write(chunk);
   });
 
-  ffmpeg.on('error', () => {
+  ffmpeg.on('error', (err) => {
     clearWatchdogs();
     slot.release();
+    streamMetrics.ffmpeg.startErrors += 1;
+    pushStreamErrorMetric('ffmpeg_start_error', err instanceof Error ? err.message : 'ffmpeg spawn error');
     if (!res.headersSent) {
       respond(res, 503, 'Transcoder failed to start');
       return;
@@ -872,6 +1127,10 @@ const transcodeStream = async (req, res) => {
   ffmpeg.on('exit', (code) => {
     clearWatchdogs();
     slot.release();
+    if (typeof code === 'number' && code !== 0) {
+      streamMetrics.ffmpeg.nonZeroExits += 1;
+      pushStreamErrorMetric('ffmpeg_exit', `exit code ${code}`);
+    }
     if (res.writableEnded) return;
 
     if (!started) {
@@ -1502,9 +1761,11 @@ const recordAuthUsage = (req, reqId, action, actor, details = {}, targetUserId =
 const isProtectedPath = (path) => (
   path.startsWith('/hdhomerun/') ||
   path.startsWith('/hdhomerun-stream/') ||
+  path.startsWith('/hdhomerun-remux/') ||
   path.startsWith('/hdhomerun-radio/') ||
   path.startsWith('/hdhomerun-transcode/') ||
   path === '/stream-info' ||
+  path.startsWith('/diagnostics/') ||
   path.startsWith('/epg/')
 );
 
@@ -1904,12 +2165,17 @@ createServer(async (req, res) => {
     }
 
     if (path.startsWith('/hdhomerun-stream/')) {
-      await passthroughStream(req, res, '/hdhomerun-stream');
+      await passthroughStream(req, res, '/hdhomerun-stream', 'passthrough');
       return;
     }
 
     if (path.startsWith('/hdhomerun-radio/')) {
-      await passthroughStream(req, res, '/hdhomerun-radio');
+      await passthroughStream(req, res, '/hdhomerun-radio', 'radio');
+      return;
+    }
+
+    if (path.startsWith('/hdhomerun-remux/')) {
+      await remuxStream(req, res);
       return;
     }
 
@@ -1950,6 +2216,36 @@ createServer(async (req, res) => {
           'application/json; charset=utf-8',
         );
       }
+      return;
+    }
+
+    if (path === '/diagnostics/streams') {
+      const avgSessionMs = streamMetrics.session.ended > 0
+        ? Math.round(streamMetrics.session.totalDurationMs / streamMetrics.session.ended)
+        : 0;
+      const diagnostics = {
+        generatedAt: nowIso(),
+        uptimeSeconds: Math.round(process.uptime()),
+        playback: {
+          maxConcurrentStreams,
+          activeSessions: activePlaybackSessions.size,
+          tunerReleaseDelayMs,
+          tunerSwitchCooldownMs,
+          requests: streamMetrics.requests,
+          session: {
+            opened: streamMetrics.session.opened,
+            rejected: streamMetrics.session.rejected,
+            ended: streamMetrics.session.ended,
+            forcedTakeover: streamMetrics.session.forcedTakeover,
+            averageDurationMs: avgSessionMs,
+          },
+          tunerProtection: streamMetrics.tunerProtection,
+        },
+        ffmpeg: streamMetrics.ffmpeg,
+        recentErrors: streamMetrics.recentErrors,
+      };
+
+      respond(res, 200, JSON.stringify(diagnostics), 'application/json; charset=utf-8');
       return;
     }
 

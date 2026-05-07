@@ -1801,6 +1801,29 @@ html, body {
   gap: 8px;
 }
 
+.diagnostics-dialog {
+  width: min(900px, 100%);
+}
+
+.diagnostics-content {
+  gap: 10px;
+}
+
+.diagnostics-json {
+  background: #0b0b0b;
+  border: 1px solid rgba(224, 224, 224, 0.1);
+  border-radius: 6px;
+  padding: 10px;
+  color: #cfd7de;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  max-height: min(52vh, 460px);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Guide panel in main view */
 
 .guide-panel {

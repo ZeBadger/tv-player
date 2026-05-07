@@ -53,6 +53,8 @@ All settings are in `compose.yaml`:
 |---|---|---|
 | `HDHOMERUN_HOST` | _(required)_ | IP address of your HDHomeRun device |
 | `MAX_CONCURRENT_STREAMS` | `1` | Maximum simultaneous playback sessions served by this app. Set to your tuner capacity (for example `4` on FLEX QUATRO) |
+| `TUNER_RELEASE_DELAY_MS` | `300` | Delay after forced session takeover before starting the next stream, giving tuner resources time to settle |
+| `TUNER_SWITCH_COOLDOWN_MS` | `350` | Minimum gap between stream requests from the same client IP to reduce rapid-switch tuner thrash |
 | `AUTH_INITIAL_ADMIN_USERNAME` | `admin` | Username for the first admin account (only used when no auth data exists yet) |
 | `AUTH_INITIAL_ADMIN_TOKEN` | auto-generated if unset | Optional one-time bootstrap token for first admin sign-in |
 | `AUTH_REMEMBER_TTL_SECONDS` | `2592000` | Remember-this-device session lifetime in seconds (default 30 days) |
@@ -120,6 +122,10 @@ After signing in as admin, you can use the in-app `Admin` panel or call these sa
 - `POST /auth/admin/tokens/revoke` with `{"tokenId":"..."}`
 
 `POST /auth/admin/tokens` returns both the token and a ready-to-share `inviteUrl`.
+
+### Stream Diagnostics
+
+- `GET /diagnostics/streams` (authenticated) — Returns live server stream diagnostics including session counters, cooldown activity, and recent FFmpeg errors. The same data is available from **Settings -> User Settings -> Diagnostics** for admins.
 
 ## EPG (Electronic Program Guide)
 

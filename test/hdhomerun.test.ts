@@ -60,6 +60,30 @@ describe('streamUrl', () => {
     expect(streamUrl(tvHd)).toBe('/hdhomerun-stream/auto/v101');
   });
 
+  it('returns the remux path for an HD TV channel when remux mode is selected', () => {
+    expect(streamUrl(tvHd, { hdProcessingMode: 'remux' })).toBe('/hdhomerun-remux/auto/v101');
+  });
+
+  it('returns the transcode path for an HD TV channel when transcode mode is selected', () => {
+    expect(streamUrl(tvHd, { hdProcessingMode: 'transcode', transcodeProfile: 'balanced' })).toBe('/hdhomerun-transcode/auto/v101?profile=balanced');
+  });
+
+  it('returns the transcode path with quality profile for transcode-quality HD mode', () => {
+    expect(streamUrl(tvHd, { hdProcessingMode: 'transcode-quality' })).toBe('/hdhomerun-transcode/auto/v101?profile=quality');
+  });
+
+  it('returns the transcode path with balanced profile for transcode-balanced HD mode', () => {
+    expect(streamUrl(tvHd, { hdProcessingMode: 'transcode-balanced' })).toBe('/hdhomerun-transcode/auto/v101?profile=balanced');
+  });
+
+  it('returns the transcode path with low profile for transcode-low HD mode', () => {
+    expect(streamUrl(tvHd, { hdProcessingMode: 'transcode-low' })).toBe('/hdhomerun-transcode/auto/v101?profile=low');
+  });
+
+  it('ignores transcodeProfile option when HD mode encodes the profile', () => {
+    expect(streamUrl(tvHd, { hdProcessingMode: 'transcode-quality', transcodeProfile: 'low' })).toBe('/hdhomerun-transcode/auto/v101?profile=quality');
+  });
+
   it('returns the transcode path for an SD TV channel', () => {
     expect(streamUrl(tvSd)).toBe('/hdhomerun-transcode/auto/v1');
   });

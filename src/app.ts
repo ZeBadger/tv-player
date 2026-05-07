@@ -5,10 +5,12 @@ import { renderChannelList, setChannelListError } from './channelList';
 
 type Mode = 'tv' | 'radio';
 type TvFilter = 'sd' | 'hd' | 'both';
+type HdProcessingMode = 'passthrough' | 'remux' | 'transcode' | 'transcode-quality' | 'transcode-balanced' | 'transcode-low';
 
 type AppSettings = {
   mode: Mode;
   tvFilter: TvFilter;
+  hdProcessingMode: HdProcessingMode;
   transcodeProfile: 'quality' | 'balanced' | 'low';
   hiddenChannelIds: string[];
   showGuideSnippets: boolean;
@@ -99,6 +101,46 @@ type AdminUsageEvent = {
   details?: Record<string, unknown>;
 };
 
+type StreamDiagnostics = {
+  generatedAt: string;
+  uptimeSeconds: number;
+  playback: {
+    maxConcurrentStreams: number;
+    activeSessions: number;
+    tunerReleaseDelayMs: number;
+    tunerSwitchCooldownMs: number;
+    requests: {
+      passthrough: number;
+      remux: number;
+      radio: number;
+      transcode: number;
+    };
+    session: {
+      opened: number;
+      rejected: number;
+      ended: number;
+      forcedTakeover: number;
+      averageDurationMs: number;
+    };
+    tunerProtection: {
+      cooldownApplied: number;
+      cooldownWaitTotalMs: number;
+    };
+  };
+  ffmpeg: {
+    started: number;
+    startTimeouts: number;
+    idleTimeouts: number;
+    startErrors: number;
+    nonZeroExits: number;
+  };
+  recentErrors: Array<{
+    at: string;
+    source: string;
+    message: string;
+  }>;
+};
+
 const SETTINGS_KEY = 'tv-player-settings-v1';
 const EPG_LAST_SITE_KEY = 'epg-last-site-slug';
 const MAX_RETRIES = 3;
@@ -159,6 +201,7 @@ const setFavoriteState = (channel: Channel, favorite: boolean) => {
 const defaultSettings: AppSettings = {
   mode: 'tv',
   tvFilter: 'both',
+  hdProcessingMode: 'passthrough',
   transcodeProfile: 'balanced',
   hiddenChannelIds: [],
   showGuideSnippets: true,
@@ -178,6 +221,7 @@ const loadSettings = (): AppSettings => {
 
     const mode = (parsed as Record<string, unknown>).mode;
     const tvFilter = (parsed as Record<string, unknown>).tvFilter;
+    const hdProcessingMode = (parsed as Record<string, unknown>).hdProcessingMode;
     const transcodeProfile = (parsed as Record<string, unknown>).transcodeProfile;
     const hiddenChannelIds = (parsed as Record<string, unknown>).hiddenChannelIds;
     const showGuideSnippets = (parsed as Record<string, unknown>).showGuideSnippets;
@@ -190,6 +234,12 @@ const loadSettings = (): AppSettings => {
     return {
       mode: mode === 'radio' ? 'radio' : 'tv',
       tvFilter: tvFilter === 'sd' || tvFilter === 'hd' || tvFilter === 'both' ? tvFilter : 'both',
+      hdProcessingMode: hdProcessingMode === 'remux' || hdProcessingMode === 'passthrough' ||
+        hdProcessingMode === 'transcode-quality' || hdProcessingMode === 'transcode-balanced' || hdProcessingMode === 'transcode-low'
+        ? hdProcessingMode
+        : hdProcessingMode === 'transcode'
+          ? 'transcode-balanced'
+          : 'passthrough',
       transcodeProfile: transcodeProfile === 'quality' || transcodeProfile === 'low' || transcodeProfile === 'balanced'
         ? transcodeProfile
         : 'balanced',
@@ -514,11 +564,21 @@ app.innerHTML = `
           <h3>Channel Settings</h3>
           <p>Manage visibility and sidebar guide display.</p>
           <div class="settings-row">
+            <label for="hd-processing-mode" class="settings-label">HD channel processing</label>
+            <select id="hd-processing-mode" class="settings-select">
+              <option value="passthrough">Passthrough</option>
+              <option value="remux">Remux (ffmpeg copy)</option>
+              <option value="transcode-quality">Transcode &ndash; Quality (~3.5 Mb/s)</option>
+              <option value="transcode-balanced">Transcode &ndash; Balanced (~2.5 Mb/s)</option>
+              <option value="transcode-low">Transcode &ndash; Low bandwidth (~1.5 Mb/s)</option>
+            </select>
+          </div>
+          <div class="settings-row">
             <label for="transcode-profile" class="settings-label">SD transcode profile</label>
             <select id="transcode-profile" class="settings-select">
-              <option value="quality">Quality</option>
-              <option value="balanced">Balanced</option>
-              <option value="low">Low bandwidth</option>
+              <option value="quality">Quality (~3.5 Mb/s)</option>
+              <option value="balanced">Balanced (~2.5 Mb/s)</option>
+              <option value="low">Low bandwidth (~1.5 Mb/s)</option>
             </select>
           </div>
           <div class="settings-actions">
@@ -538,9 +598,27 @@ app.innerHTML = `
           <div class="settings-actions">
             <button id="more-info-toggle" class="hidden-settings-btn" type="button" hidden>More info: Off</button>
             <button id="admin-btn" class="hidden-settings-btn" type="button" hidden>Admin</button>
+            <button id="diagnostics-btn" class="hidden-settings-btn" type="button" hidden>Diagnostics</button>
             <button id="sign-out-btn" class="hidden-settings-btn" type="button" hidden>Sign out</button>
           </div>
         </section>
+      </div>
+    </div>
+  </section>
+
+  <section id="diagnostics-modal" class="settings-modal" hidden>
+    <div class="settings-dialog diagnostics-dialog" role="dialog" aria-modal="true" aria-label="Stream diagnostics">
+      <div class="settings-header">
+        <h2>Stream Diagnostics</h2>
+        <button id="diagnostics-close" type="button">Close</button>
+      </div>
+      <div class="settings-content diagnostics-content">
+        <div class="settings-actions">
+          <button id="diagnostics-refresh" class="hidden-settings-btn" type="button">Refresh</button>
+        </div>
+        <p id="diagnostics-summary" class="admin-muted">Loading diagnostics…</p>
+        <pre id="diagnostics-json" class="diagnostics-json"></pre>
+        <div id="diagnostics-status" class="admin-status" aria-live="polite"></div>
       </div>
     </div>
   </section>
@@ -571,9 +649,17 @@ const settingsBtn = document.getElementById('settings-btn') as HTMLButtonElement
 const settingsModal = document.getElementById('settings-modal')!;
 const settingsCloseBtn = document.getElementById('settings-close') as HTMLButtonElement;
 const settingsCurrentUserEl = document.getElementById('settings-current-user')!;
+const hdProcessingModeEl = document.getElementById('hd-processing-mode') as HTMLSelectElement;
 const transcodeProfileEl = document.getElementById('transcode-profile') as HTMLSelectElement;
 const moreInfoToggleBtn = document.getElementById('more-info-toggle') as HTMLButtonElement;
 const visibilityBtn = document.getElementById('visibility-btn') as HTMLButtonElement;
+const diagnosticsBtn = document.getElementById('diagnostics-btn') as HTMLButtonElement;
+const diagnosticsModal = document.getElementById('diagnostics-modal')!;
+const diagnosticsCloseBtn = document.getElementById('diagnostics-close') as HTMLButtonElement;
+const diagnosticsRefreshBtn = document.getElementById('diagnostics-refresh') as HTMLButtonElement;
+const diagnosticsSummaryEl = document.getElementById('diagnostics-summary')!;
+const diagnosticsJsonEl = document.getElementById('diagnostics-json')!;
+const diagnosticsStatusEl = document.getElementById('diagnostics-status')!;
 const visibilityModal = document.getElementById('visibility-modal')!;
 const visibilityClose = document.getElementById('visibility-close') as HTMLButtonElement;
 const modalModeFilterEl = document.getElementById('modal-mode-filter') as HTMLSelectElement;
@@ -668,6 +754,7 @@ let appInitialized = false;
 let reopenSettingsAfterSubModalClose = false;
 let pendingScrollToActiveChannel = false;
 let mobileSidebarOpen = false;
+let diagnosticsData: StreamDiagnostics | null = null;
 
 const mobileLayoutQuery = window.matchMedia('(max-width: 900px)');
 
@@ -752,12 +839,14 @@ const updateAdminActionState = () => {
   const isAdmin = currentAuthUser?.role === 'admin';
   moreInfoToggleBtn.hidden = !isAdmin;
   adminBtn.hidden = !isAdmin;
+  diagnosticsBtn.hidden = !isAdmin;
   adminGenerateTokenBtn.disabled = !isAdmin || !selectedAdminUserId;
   adminDisableUserBtn.disabled = !isAdmin || !selectedAdminUserId;
   adminRestoreUserBtn.disabled = !isAdmin || !selectedAdminUserId;
   adminDeleteUserBtn.disabled = !isAdmin || !selectedAdminUserId;
   if (!isAdmin) {
     adminModal.hidden = true;
+    diagnosticsModal.hidden = true;
     hideAdminTokenOutput();
     setAdminStatus('');
   }
@@ -1399,6 +1488,7 @@ const setModeUi = () => {
 const syncControlValues = () => {
   modeFilterEl.value = settings.mode;
   tvFilterEl.value = settings.tvFilter;
+  hdProcessingModeEl.value = settings.hdProcessingMode;
   transcodeProfileEl.value = settings.transcodeProfile;
   channelSortEl.value = settings.channelSort;
   guideSnippetsToggleBtn.textContent = `Guide Detail: ${settings.showGuideSnippets ? 'On' : 'Off'}`;
@@ -1491,16 +1581,56 @@ const isAutoplayBlockedMessage = (message: string): boolean => {
   );
 };
 
+type RetryPolicy = {
+  category: 'network' | 'tuner' | 'transcode' | 'captions' | 'generic';
+  maxRetries: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+};
+
+const classifyRetryPolicy = (message: string, captionsBurnInEnabled: boolean): RetryPolicy => {
+  const normalized = message.toLowerCase();
+
+  if (captionsBurnInEnabled && (normalized.includes('transcoder could not open stream') || normalized.includes('subtitle'))) {
+    return { category: 'captions', maxRetries: 1, baseDelayMs: 700, maxDelayMs: 1200 };
+  }
+
+  if (normalized.includes('busy') || normalized.includes('slot') || normalized.includes('stream not found')) {
+    return { category: 'tuner', maxRetries: 3, baseDelayMs: 450, maxDelayMs: 1800 };
+  }
+
+  if (normalized.includes('network') || normalized.includes('timeout') || normalized.includes('unavailable') || normalized.includes('connection lost')) {
+    return { category: 'network', maxRetries: 4, baseDelayMs: 650, maxDelayMs: 2600 };
+  }
+
+  if (normalized.includes('decode') || normalized.includes('unsupported') || normalized.includes('transcode') || normalized.includes('format')) {
+    return { category: 'transcode', maxRetries: 2, baseDelayMs: 700, maxDelayMs: 2200 };
+  }
+
+  return { category: 'generic', maxRetries: MAX_RETRIES, baseDelayMs: 850, maxDelayMs: 2800 };
+};
+
+const computeRetryDelayMs = (attempt: number, policy: RetryPolicy): number => {
+  const scaled = Math.round(policy.baseDelayMs * Math.pow(1.45, Math.max(0, attempt - 1)));
+  return Math.min(policy.maxDelayMs, scaled);
+};
+
 const getPlaybackModeLabel = (channel: Channel): string => {
   const url = streamUrl(channel, {
     forceTranscode: burnInCaptionsEnabled && !isRadio(channel),
+    hdProcessingMode: settings.hdProcessingMode,
     captionsMode: burnInCaptionsEnabled ? 'burn' : 'none',
     transcodeProfile: settings.transcodeProfile,
   });
 
   if (url.startsWith('/hdhomerun-transcode/')) {
-    return `Transcode (${settings.transcodeProfile})`;
+    const hdMode = settings.hdProcessingMode;
+    const profile = hdMode === 'transcode-quality' || hdMode === 'transcode-balanced' || hdMode === 'transcode-low'
+      ? hdMode.replace('transcode-', '')
+      : settings.transcodeProfile;
+    return `Transcode (${profile})`;
   }
+  if (url.startsWith('/hdhomerun-remux/')) return 'HD remux (copy)';
   if (url.startsWith('/hdhomerun-radio/')) return 'Radio passthrough';
   return 'TV passthrough';
 };
@@ -1649,6 +1779,7 @@ const startChannelPlayback = (channel: Channel, resetFailures: boolean) => {
 
   const stream = streamUrl(channel, {
     forceTranscode: burnInCaptionsEnabled && !isRadio(channel),
+    hdProcessingMode: settings.hdProcessingMode,
     captionsMode: burnInCaptionsEnabled ? 'burn' : 'none',
     transcodeProfile: settings.transcodeProfile,
   });
@@ -1668,11 +1799,28 @@ const startChannelPlayback = (channel: Channel, resetFailures: boolean) => {
 
       activeChannelFailureCount += 1;
 
-      if (activeChannelFailureCount <= MAX_RETRIES) {
-        setPlaybackStatus(`Stream issue: ${message}. Retrying ${activeChannelFailureCount}/${MAX_RETRIES}...`, 'error');
+      const retryPolicy = classifyRetryPolicy(message, burnInCaptionsEnabled);
+
+      if (retryPolicy.category === 'captions') {
+        burnInCaptionsEnabled = false;
+        setSubtitlePreference(channel, 'off');
+        setPlaybackStatus('Burn-in subtitle stream failed. Retrying without burn-in captions...', 'info', { timeoutMs: 2600 });
         retryTimer = window.setTimeout(() => {
           startChannelPlayback(channel, false);
-        }, RETRY_DELAY_MS);
+        }, retryPolicy.baseDelayMs);
+        return;
+      }
+
+      if (activeChannelFailureCount <= retryPolicy.maxRetries) {
+        const delayMs = computeRetryDelayMs(activeChannelFailureCount, retryPolicy);
+        const delaySeconds = (delayMs / 1000).toFixed(delayMs >= 10000 ? 0 : 1);
+        setPlaybackStatus(
+          `Stream issue: ${message}. Retrying ${activeChannelFailureCount}/${retryPolicy.maxRetries} in ${delaySeconds}s...`,
+          'error',
+        );
+        retryTimer = window.setTimeout(() => {
+          startChannelPlayback(channel, false);
+        }, delayMs);
         return;
       }
 
@@ -1724,6 +1872,54 @@ const filteredChannels = (): Channel[] => {
   });
 
   return searched;
+};
+
+const setDiagnosticsStatus = (message: string, isError = false) => {
+  diagnosticsStatusEl.textContent = message;
+  diagnosticsStatusEl.classList.toggle('error', isError);
+};
+
+const formatDuration = (seconds: number): string => {
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  if (hrs > 0) return `${hrs}h ${mins}m ${secs}s`;
+  if (mins > 0) return `${mins}m ${secs}s`;
+  return `${secs}s`;
+};
+
+const renderDiagnostics = () => {
+  if (!diagnosticsData) {
+    diagnosticsSummaryEl.textContent = 'No diagnostics data loaded yet.';
+    diagnosticsJsonEl.textContent = '';
+    return;
+  }
+
+  const summary = [
+    `Uptime ${formatDuration(diagnosticsData.uptimeSeconds)} • Active sessions ${diagnosticsData.playback.activeSessions}/${diagnosticsData.playback.maxConcurrentStreams}`,
+    `Requests: TV passthrough ${diagnosticsData.playback.requests.passthrough}, remux ${diagnosticsData.playback.requests.remux}, radio ${diagnosticsData.playback.requests.radio}, transcode ${diagnosticsData.playback.requests.transcode}`,
+    `Session rejects ${diagnosticsData.playback.session.rejected}, forced takeovers ${diagnosticsData.playback.session.forcedTakeover}, avg session ${Math.round(diagnosticsData.playback.session.averageDurationMs / 1000)}s`,
+    `Cooldowns applied ${diagnosticsData.playback.tunerProtection.cooldownApplied}, total wait ${(diagnosticsData.playback.tunerProtection.cooldownWaitTotalMs / 1000).toFixed(1)}s`,
+  ];
+  diagnosticsSummaryEl.textContent = summary.join(' | ');
+  diagnosticsJsonEl.textContent = JSON.stringify(diagnosticsData, null, 2);
+};
+
+const refreshDiagnostics = async () => {
+  diagnosticsRefreshBtn.disabled = true;
+  setDiagnosticsStatus('Loading diagnostics...');
+
+  try {
+    const res = await fetch('/diagnostics/streams', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    diagnosticsData = await res.json() as StreamDiagnostics;
+    renderDiagnostics();
+    setDiagnosticsStatus(`Updated ${new Date(diagnosticsData.generatedAt).toLocaleTimeString()}`);
+  } catch (err) {
+    setDiagnosticsStatus(err instanceof Error ? err.message : 'Failed to load diagnostics', true);
+  } finally {
+    diagnosticsRefreshBtn.disabled = false;
+  }
 };
 
 const visibilityFilterMatches = (channel: Channel): boolean => {
@@ -2052,8 +2248,23 @@ transcodeProfileEl.addEventListener('change', () => {
   settings.transcodeProfile = value === 'quality' || value === 'low' || value === 'balanced' ? value : 'balanced';
   saveSettings(settings);
 
-  if (activeChannel && !isRadio(activeChannel) && (!activeChannel.HD || burnInCaptionsEnabled)) {
+  if (activeChannel && !isRadio(activeChannel) && (!activeChannel.HD || burnInCaptionsEnabled || settings.hdProcessingMode === 'transcode')) {
     setPlaybackStatus(`Applying ${settings.transcodeProfile} transcode profile...`, 'info', { timeoutMs: 2000 });
+    startChannelPlayback(activeChannel, true);
+  }
+  renderNowPlayingBar();
+});
+
+hdProcessingModeEl.addEventListener('change', () => {
+  const value = hdProcessingModeEl.value;
+  settings.hdProcessingMode = value === 'remux' || value === 'passthrough' ||
+    value === 'transcode-quality' || value === 'transcode-balanced' || value === 'transcode-low'
+    ? value
+    : 'passthrough';
+  saveSettings(settings);
+
+  if (activeChannel && !isRadio(activeChannel) && activeChannel.HD && !burnInCaptionsEnabled) {
+    setPlaybackStatus(`Applying HD mode: ${settings.hdProcessingMode}.`, 'info', { timeoutMs: 2000 });
     startChannelPlayback(activeChannel, true);
   }
   renderNowPlayingBar();
@@ -2073,6 +2284,13 @@ visibilityBtn.addEventListener('click', () => {
   setVisibilityFilterUi();
   visibilityModal.hidden = false;
   renderVisibilityModal();
+});
+
+diagnosticsBtn.addEventListener('click', () => {
+  reopenSettingsAfterSubModalClose = !settingsModal.hidden;
+  settingsModal.hidden = true;
+  diagnosticsModal.hidden = false;
+  void refreshDiagnostics();
 });
 
 settingsBtn.addEventListener('click', () => {
@@ -2100,6 +2318,22 @@ visibilityModal.addEventListener('click', (event) => {
     visibilityModal.hidden = true;
     restoreSettingsModalIfNeeded();
   }
+});
+
+diagnosticsCloseBtn.addEventListener('click', () => {
+  diagnosticsModal.hidden = true;
+  restoreSettingsModalIfNeeded();
+});
+
+diagnosticsModal.addEventListener('click', (event) => {
+  if (event.target === diagnosticsModal) {
+    diagnosticsModal.hidden = true;
+    restoreSettingsModalIfNeeded();
+  }
+});
+
+diagnosticsRefreshBtn.addEventListener('click', () => {
+  void refreshDiagnostics();
 });
 
 showAllBtn.addEventListener('click', () => {

@@ -16,11 +16,13 @@ export interface Channel {
 // nginx in the container proxies them.
 const API_BASE = '/hdhomerun';
 const STREAM_BASE = '/hdhomerun-stream';
+const REMUX_BASE = '/hdhomerun-remux';
 const RADIO_BASE = '/hdhomerun-radio';
 const TRANSCODE_BASE = '/hdhomerun-transcode';
 
 export type StreamOptions = {
   forceTranscode?: boolean;
+  hdProcessingMode?: 'passthrough' | 'remux' | 'transcode' | 'transcode-quality' | 'transcode-balanced' | 'transcode-low';
   captionsMode?: 'none' | 'burn';
   transcodeProfile?: 'quality' | 'balanced' | 'low';
 };
@@ -56,13 +58,20 @@ export function isRadio(channel: Channel): boolean {
 export function streamUrl(channel: Channel, options: StreamOptions = {}): string {
   const deviceUrl = new URL(channel.URL);
   const path = `${deviceUrl.pathname}${deviceUrl.search}`;
+  const hdProcessingMode = options.hdProcessingMode ?? 'passthrough';
+
+  // For mode-encoded HD transcode options, the profile is derived from the mode name.
+  let effectiveProfile = options.transcodeProfile;
+  if (hdProcessingMode === 'transcode-quality') effectiveProfile = 'quality';
+  else if (hdProcessingMode === 'transcode-balanced') effectiveProfile = 'balanced';
+  else if (hdProcessingMode === 'transcode-low') effectiveProfile = 'low';
 
   const transcodeParams = new URLSearchParams();
   if (options.captionsMode === 'burn') {
     transcodeParams.set('captions', 'burn');
   }
-  if (options.transcodeProfile) {
-    transcodeParams.set('profile', options.transcodeProfile);
+  if (effectiveProfile) {
+    transcodeParams.set('profile', effectiveProfile);
   }
 
   const transcodeSuffix = transcodeParams.size > 0
@@ -75,6 +84,14 @@ export function streamUrl(channel: Channel, options: StreamOptions = {}): string
 
   if (options.forceTranscode || !channel.HD) {
     return `${TRANSCODE_BASE}${path}${transcodeSuffix}`;
+  }
+
+  if (channel.HD && (hdProcessingMode === 'transcode' || hdProcessingMode === 'transcode-quality' || hdProcessingMode === 'transcode-balanced' || hdProcessingMode === 'transcode-low')) {
+    return `${TRANSCODE_BASE}${path}${transcodeSuffix}`;
+  }
+
+  if (channel.HD && hdProcessingMode === 'remux') {
+    return `${REMUX_BASE}${path}`;
   }
 
   return `${STREAM_BASE}${path}`;
